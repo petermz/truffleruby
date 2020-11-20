@@ -72,8 +72,8 @@ describe "The launcher" do
     unless [:ruby, :truffleruby].include?(launcher)
       it "runs #{launcher} as an -S command" do
         out = ruby_exe(nil, options: "-S#{launcher} --version", args: @redirect)
-        out.should =~ test
         check_status_and_empty_stderr
+        out.should =~ test
       end
     end
   end
@@ -82,8 +82,8 @@ describe "The launcher" do
     it "supports running #{launcher} in any of the bin/ directories" do
       @bin_dirs.each do |bin_dir|
         out = `#{bin_dir}/#{launcher} --version #{@redirect}`
-        out.should =~ test
         check_status_and_empty_stderr
+        out.should =~ test
       end
     end
   end
@@ -98,8 +98,8 @@ describe "The launcher" do
             linkname = "linkto#{launcher}"
             File.symlink("#{bin_dir}/#{launcher}", linkname)
             out = `./#{linkname} --version #{@redirect}`
-            out.should =~ test
             check_status_and_empty_stderr
+            out.should =~ test
           end
         end
       end
@@ -145,20 +145,12 @@ describe "The launcher" do
     end
   end
 
-  ['RUBYOPT', 'TRUFFLERUBYOPT'].each do |var|
-    it "should recognize ruby --vm options in #{var}" do
-      out = ruby_exe('print Truffle::System.get_java_property("foo")', env: { var => "--vm.Dfoo=bar" }, args: @redirect)
-      out.should == 'bar'
-      check_status_and_empty_stderr
-    end
-  end
-
   def should_print_full_java_command(options, env: {})
     out = ruby_exe(nil, options: options, env: env, args: @redirect)
+    check_status_and_empty_stderr
     parts = out.split(' ')
     parts[0].should == "$"
     parts[1].should =~ /(java|graalvm)$/
-    check_status_and_empty_stderr
   end
 
   it "does not create context on --version and -v" do
@@ -315,7 +307,7 @@ describe "The launcher" do
     out = ruby_exe("puts 14.hash", options: "--experimental-options --hashing-deterministic", args: "2>&1")
     check_status_or_print(out)
     out.should include("SEVERE: deterministic hashing is enabled - this may make you vulnerable to denial of service attacks")
-    out.should include("7141275149799654099")
+    out.should include("3412061130696242594")
   end
 
   it "prints help containing runtime options" do
@@ -328,7 +320,7 @@ describe "The launcher" do
       out.should include("--jvm")
     end
 
-    if Truffle::System.get_java_property 'org.graalvm.home'
+    if TruffleRuby.graalvm_home
       # These options are only shown in GraalVM, as they are not available in a standalone distribution
       out.should include("--polyglot")
     end
@@ -410,4 +402,60 @@ describe "The launcher" do
     end
   end
 
+  ['RUBYOPT', 'TRUFFLERUBYOPT'].each do |var|
+    it "should recognize ruby --vm options in #{var}" do
+      out = ruby_exe('print Truffle::System.get_java_property("foo")', env: { var => "--vm.Dfoo=bar" }, args: @redirect)
+      check_status_and_empty_stderr
+      out.should == 'bar'
+    end
+  end
+
+  guard -> {
+    # GraalVM with both --jvm and --native
+    TruffleRuby.graalvm_home and TruffleRuby.native?
+  } do
+    describe "runtime configuration flags" do
+      before :each do
+        @trufflerubyopt = ENV['TRUFFLERUBYOPT']
+        # remove --native/--jvm from $TRUFFLERUBYOPT as they can conflict with command line arguments for these specs
+        ENV['TRUFFLERUBYOPT'] = @trufflerubyopt.to_s.gsub(/--(native|jvm)\b/, '')
+      end
+
+      after :each do
+        ENV['TRUFFLERUBYOPT'] = @trufflerubyopt
+      end
+
+      ['RUBYOPT', 'TRUFFLERUBYOPT'].each do |var|
+        it "should recognize ruby --vm options in #{var} when switching to JVM" do
+          env = { var => "--jvm --vm.Dfoo=bar" }
+          out = ruby_exe('puts RUBY_DESCRIPTION; puts Truffle::System.get_java_property("foo")', env: env, args: @redirect)
+          check_status_and_empty_stderr
+          out = out.lines.map(&:chomp)
+          out[0].should =~ /GraalVM (CE|EE) JVM/
+          out[1].should == 'bar'
+        end
+      end
+
+      it "uses --native by default" do
+        out = ruby_exe(nil, options: "--version", args: @redirect)
+        check_status_and_empty_stderr
+        out.should =~ /GraalVM (CE|EE) Native/
+      end
+
+      it "switches to JVM with --jvm as a Ruby argument" do
+        out = ruby_exe(nil, options: "--jvm --version", args: @redirect)
+        check_status_and_empty_stderr
+        out.should =~ /GraalVM (CE|EE) JVM/
+      end
+
+      it "keeps --jvm as an application argument if given as an application argument" do
+        script = fixture(__FILE__, "argv.rb")
+        out = ruby_exe(nil, options: "-v", args: "#{script} --jvm 1 2 #{@redirect}")
+        check_status_and_empty_stderr
+        out = out.lines.map(&:chomp)
+        out[0].should =~ /GraalVM (CE|EE) Native/
+        out.should.include?('["--jvm", "1", "2"]')
+      end
+    end
+  end
 end

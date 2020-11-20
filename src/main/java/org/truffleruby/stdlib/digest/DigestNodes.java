@@ -9,26 +9,27 @@
  */
 package org.truffleruby.stdlib.digest;
 
-import java.security.MessageDigest;
-import java.security.NoSuchAlgorithmException;
-
+import com.oracle.truffle.api.CompilerDirectives;
+import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
+import com.oracle.truffle.api.dsl.CachedLanguage;
+import com.oracle.truffle.api.dsl.Specialization;
 import org.jcodings.specific.ASCIIEncoding;
 import org.jcodings.specific.USASCIIEncoding;
-import org.truffleruby.Layouts;
 import org.truffleruby.RubyContext;
+import org.truffleruby.RubyLanguage;
 import org.truffleruby.builtins.CoreMethod;
 import org.truffleruby.builtins.CoreMethodArrayArgumentsNode;
 import org.truffleruby.builtins.CoreModule;
 import org.truffleruby.collections.ByteArrayBuilder;
 import org.truffleruby.core.rope.CodeRange;
 import org.truffleruby.core.rope.Rope;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.core.string.StringNodes;
-import org.truffleruby.core.string.StringOperations;
-import org.truffleruby.language.control.JavaException;
+import org.truffleruby.language.RubyContextSourceNode;
+import org.truffleruby.language.objects.AllocateHelperNode;
 
-import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
-import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.object.DynamicObject;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 
 @CoreModule(value = "Truffle::Digest", isClass = true)
 public abstract class DigestNodes {
@@ -38,23 +39,30 @@ public abstract class DigestNodes {
         try {
             return MessageDigest.getInstance(name);
         } catch (NoSuchAlgorithmException e) {
-            throw new JavaException(e);
+            throw CompilerDirectives.shouldNotReachHere(e);
         }
     }
 
-    private static DynamicObject createDigest(RubyContext context, DigestAlgorithm algorithm) {
-        return Layouts.DIGEST.createDigest(
-                context.getCoreLibrary().digestFactory,
+    private static RubyDigest createDigest(RubyLanguage language, RubyContext context, AllocateHelperNode allocateNode,
+            RubyContextSourceNode rubyContextSourceNode, DigestAlgorithm algorithm) {
+        final RubyDigest instance = new RubyDigest(
+                context.getCoreLibrary().digestClass,
+                RubyLanguage.digestShape,
                 algorithm,
                 getMessageDigestInstance(algorithm.getName()));
+        allocateNode.trace(instance, rubyContextSourceNode, language);
+        return instance;
     }
 
     @CoreMethod(names = "md5", onSingleton = true)
     public abstract static class MD5Node extends CoreMethodArrayArgumentsNode {
 
+        @Child private AllocateHelperNode allocateNode = AllocateHelperNode.create();
+
         @Specialization
-        protected DynamicObject md5() {
-            return createDigest(getContext(), DigestAlgorithm.MD5);
+        protected RubyDigest md5(
+                @CachedLanguage RubyLanguage language) {
+            return createDigest(language, getContext(), allocateNode, this, DigestAlgorithm.MD5);
         }
 
     }
@@ -62,9 +70,12 @@ public abstract class DigestNodes {
     @CoreMethod(names = "sha1", onSingleton = true)
     public abstract static class SHA1Node extends CoreMethodArrayArgumentsNode {
 
+        @Child private AllocateHelperNode allocateNode = AllocateHelperNode.create();
+
         @Specialization
-        protected DynamicObject sha1() {
-            return createDigest(getContext(), DigestAlgorithm.SHA1);
+        protected RubyDigest sha1(
+                @CachedLanguage RubyLanguage language) {
+            return createDigest(language, getContext(), allocateNode, this, DigestAlgorithm.SHA1);
         }
 
     }
@@ -72,9 +83,12 @@ public abstract class DigestNodes {
     @CoreMethod(names = "sha256", onSingleton = true)
     public abstract static class SHA256Node extends CoreMethodArrayArgumentsNode {
 
+        @Child private AllocateHelperNode allocateNode = AllocateHelperNode.create();
+
         @Specialization
-        protected DynamicObject sha256() {
-            return createDigest(getContext(), DigestAlgorithm.SHA256);
+        protected RubyDigest sha256(
+                @CachedLanguage RubyLanguage language) {
+            return createDigest(language, getContext(), allocateNode, this, DigestAlgorithm.SHA256);
         }
 
     }
@@ -82,9 +96,12 @@ public abstract class DigestNodes {
     @CoreMethod(names = "sha384", onSingleton = true)
     public abstract static class SHA384Node extends CoreMethodArrayArgumentsNode {
 
+        @Child private AllocateHelperNode allocateNode = AllocateHelperNode.create();
+
         @Specialization
-        protected DynamicObject sha384() {
-            return createDigest(getContext(), DigestAlgorithm.SHA384);
+        protected RubyDigest sha384(
+                @CachedLanguage RubyLanguage language) {
+            return createDigest(language, getContext(), allocateNode, this, DigestAlgorithm.SHA384);
         }
 
     }
@@ -92,9 +109,12 @@ public abstract class DigestNodes {
     @CoreMethod(names = "sha512", onSingleton = true)
     public abstract static class SHA512Node extends CoreMethodArrayArgumentsNode {
 
+        @Child private AllocateHelperNode allocateNode = AllocateHelperNode.create();
+
         @Specialization
-        protected DynamicObject sha512() {
-            return createDigest(getContext(), DigestAlgorithm.SHA512);
+        protected RubyDigest sha512(
+                @CachedLanguage RubyLanguage language) {
+            return createDigest(language, getContext(), allocateNode, this, DigestAlgorithm.SHA512);
         }
 
     }
@@ -103,10 +123,10 @@ public abstract class DigestNodes {
     public abstract static class UpdateNode extends CoreMethodArrayArgumentsNode {
 
         @TruffleBoundary
-        @Specialization(guards = "isRubyString(message)")
-        protected DynamicObject update(DynamicObject digestObject, DynamicObject message) {
-            final MessageDigest digest = Layouts.DIGEST.getDigest(digestObject);
-            final Rope rope = StringOperations.rope(message);
+        @Specialization
+        protected RubyDigest update(RubyDigest digestObject, RubyString message) {
+            final MessageDigest digest = digestObject.digest;
+            final Rope rope = message.rope;
 
             digest.update(rope.getBytes());
             return digestObject;
@@ -119,8 +139,8 @@ public abstract class DigestNodes {
 
         @TruffleBoundary
         @Specialization
-        protected DynamicObject reset(DynamicObject digestObject) {
-            Layouts.DIGEST.getDigest(digestObject).reset();
+        protected RubyDigest reset(RubyDigest digestObject) {
+            digestObject.digest.reset();
             return digestObject;
         }
 
@@ -132,8 +152,8 @@ public abstract class DigestNodes {
         @Child private StringNodes.MakeStringNode makeStringNode = StringNodes.MakeStringNode.create();
 
         @Specialization
-        protected DynamicObject digest(DynamicObject digestObject) {
-            final MessageDigest digest = Layouts.DIGEST.getDigest(digestObject);
+        protected RubyString digest(RubyDigest digestObject) {
+            final MessageDigest digest = digestObject.digest;
 
             return makeStringNode.executeMake(cloneAndDigest(digest), ASCIIEncoding.INSTANCE, CodeRange.CR_VALID);
         }
@@ -147,7 +167,7 @@ public abstract class DigestNodes {
             try {
                 clonedDigest = (MessageDigest) digest.clone();
             } catch (CloneNotSupportedException e) {
-                throw new JavaException(e);
+                throw CompilerDirectives.shouldNotReachHere(e);
             }
 
             return clonedDigest.digest();
@@ -159,8 +179,8 @@ public abstract class DigestNodes {
     public abstract static class DigestLengthNode extends CoreMethodArrayArgumentsNode {
 
         @Specialization
-        protected int digestLength(DynamicObject digestObject) {
-            return Layouts.DIGEST.getAlgorithm(digestObject).getLength();
+        protected int digestLength(RubyDigest digestObject) {
+            return digestObject.algorithm.getLength();
         }
 
     }
@@ -171,9 +191,9 @@ public abstract class DigestNodes {
         @Child private StringNodes.MakeStringNode makeStringNode = StringNodes.MakeStringNode.create();
 
         @TruffleBoundary
-        @Specialization(guards = "isRubyString(message)")
-        protected DynamicObject bubblebabble(DynamicObject message) {
-            final Rope rope = StringOperations.rope(message);
+        @Specialization
+        protected RubyString bubblebabble(RubyString message) {
+            final Rope rope = message.rope;
             final byte[] bubblebabbleBytes = bubblebabble(rope.getBytes(), 0, rope.byteLength()).getBytes();
 
             return makeStringNode.executeMake(bubblebabbleBytes, USASCIIEncoding.INSTANCE, CodeRange.CR_7BIT);
@@ -233,16 +253,16 @@ public abstract class DigestNodes {
 
                 if ((i + 1 < rounds) || (length % 2 != 0)) {
                     long b = message[begin + 2 * i] & 0xFF;
-                    idx0 = (int) ((((b >> 6) & 3) + seed) % 6) & 0xFFFFFFFF;
-                    idx1 = (int) (((b) >> 2) & 15) & 0xFFFFFFFF;
-                    idx2 = (int) (((b & 3) + (seed / 6)) % 6) & 0xFFFFFFFF;
+                    idx0 = (int) ((((b >> 6) & 3) + seed) % 6);
+                    idx1 = (int) (((b) >> 2) & 15);
+                    idx2 = (int) (((b & 3) + (seed / 6)) % 6);
                     retval.append(vowels[idx0]);
                     retval.append(consonants[idx1]);
                     retval.append(vowels[idx2]);
                     if ((i + 1) < rounds) {
                         long b2 = message[begin + (2 * i) + 1] & 0xFF;
-                        idx3 = (int) ((b2 >> 4) & 15) & 0xFFFFFFFF;
-                        idx4 = (int) ((b2) & 15) & 0xFFFFFFFF;
+                        idx3 = (int) ((b2 >> 4) & 15);
+                        idx4 = (int) ((b2) & 15);
                         retval.append(consonants[idx3]);
                         retval.append('-');
                         retval.append(consonants[idx4]);
@@ -252,9 +272,9 @@ public abstract class DigestNodes {
                                 36;
                     }
                 } else {
-                    idx0 = (int) (seed % 6) & 0xFFFFFFFF;
+                    idx0 = (int) (seed % 6);
                     idx1 = 16;
-                    idx2 = (int) (seed / 6) & 0xFFFFFFFF;
+                    idx2 = (int) (seed / 6);
                     retval.append(vowels[idx0]);
                     retval.append(consonants[idx1]);
                     retval.append(vowels[idx2]);

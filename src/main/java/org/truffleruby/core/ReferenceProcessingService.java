@@ -16,12 +16,14 @@ import java.util.function.Consumer;
 
 import com.oracle.truffle.api.CompilerDirectives;
 import org.truffleruby.RubyContext;
+import org.truffleruby.SuppressFBWarnings;
+import org.truffleruby.core.thread.RubyThread;
 import org.truffleruby.core.thread.ThreadManager;
+import org.truffleruby.language.control.KillException;
 import org.truffleruby.language.control.RaiseException;
 import org.truffleruby.language.control.TerminationException;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
-import com.oracle.truffle.api.object.DynamicObject;
 
 public abstract class ReferenceProcessingService<R extends ReferenceProcessingService.ProcessingReference<R>> {
 
@@ -137,7 +139,8 @@ public abstract class ReferenceProcessingService<R extends ReferenceProcessingSe
     public static class ReferenceProcessor {
         protected final ReferenceQueue<Object> processingQueue = new ReferenceQueue<>();
 
-        protected DynamicObject processingThread;
+        private volatile boolean shutdown = false;
+        protected RubyThread processingThread;
         protected final RubyContext context;
 
         public ReferenceProcessor(RubyContext context) {
@@ -164,22 +167,54 @@ public abstract class ReferenceProcessingService<R extends ReferenceProcessingSe
 
         protected void createProcessingThread(Class<?> owner) {
             final ThreadManager threadManager = context.getThreadManager();
+            RubyThread newThread;
             synchronized (this) {
                 if (processingThread != null) {
                     return;
                 }
-                processingThread = threadManager.createBootThread(threadName());
+                newThread = threadManager.createBootThread(threadName());
+                processingThread = newThread;
             }
             final String sharingReason = "creating " + threadName() + " thread for " + owner.getSimpleName();
 
-            threadManager.initialize(processingThread, null, threadName(), sharingReason, () -> {
+            threadManager.initialize(newThread, null, threadName(), sharingReason, () -> {
                 while (true) {
                     final ProcessingReference<?> reference = (ProcessingReference<?>) threadManager
-                            .runUntilResult(null, processingQueue::remove);
+                            .runUntilResult(null, () -> {
+                                try {
+                                    return processingQueue.remove();
+                                } catch (InterruptedException interrupted) {
+                                    if (shutdown) {
+                                        throw new KillException();
+                                    } else {
+                                        throw interrupted;
+                                    }
+                                }
+                            });
 
                     reference.service().processReference(reference);
                 }
             });
+        }
+
+        public boolean shutdownProcessingThread() {
+            final Thread javaThread = processingThread.thread;
+            if (javaThread == null) {
+                return false;
+            }
+
+            shutdown = true;
+            javaThread.interrupt();
+
+            context.getThreadManager().runUntilResultKeepStatus(null, () -> {
+                javaThread.join(1000);
+                return ThreadManager.BlockingAction.SUCCESS;
+            });
+            return true;
+        }
+
+        public RubyThread getProcessingThread() {
+            return processingThread;
         }
 
         protected final String threadName() {
@@ -271,6 +306,7 @@ public abstract class ReferenceProcessingService<R extends ReferenceProcessingSe
         first = newRef;
     }
 
+    @SuppressFBWarnings("IS")
     protected R getFirst() {
         return first;
     }

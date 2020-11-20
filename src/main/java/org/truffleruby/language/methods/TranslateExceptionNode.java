@@ -11,20 +11,21 @@ package org.truffleruby.language.methods;
 
 import java.util.EnumSet;
 
-import com.oracle.truffle.api.CompilerDirectives;
-import org.truffleruby.Layouts;
 import org.truffleruby.RubyContext;
 import org.truffleruby.RubyLanguage;
+import org.truffleruby.core.exception.RubyException;
+import org.truffleruby.core.hash.RubyHash;
+import org.truffleruby.core.array.RubyArray;
 import org.truffleruby.language.RubyBaseNode;
+import org.truffleruby.language.RubyDynamicObject;
 import org.truffleruby.language.RubyGuards;
 import org.truffleruby.language.backtrace.Backtrace;
 import org.truffleruby.language.backtrace.BacktraceFormatter;
 import org.truffleruby.language.backtrace.BacktraceFormatter.FormattingFlags;
 import org.truffleruby.language.backtrace.BacktraceInterleaver;
-import org.truffleruby.language.control.JavaException;
 import org.truffleruby.language.control.RaiseException;
-import org.truffleruby.language.control.TruffleFatalException;
 
+import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.TruffleException;
 import com.oracle.truffle.api.TruffleStackTrace;
@@ -35,7 +36,6 @@ import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.dsl.UnsupportedSpecializationException;
 import com.oracle.truffle.api.nodes.ControlFlowException;
 import com.oracle.truffle.api.nodes.Node;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.BranchProfile;
 
 @GenerateUncached
@@ -83,9 +83,6 @@ public abstract class TranslateExceptionNode extends RubyBaseNode {
             return new RaiseException(
                     context,
                     translateUnsupportedSpecialization(context, exception, unsupportedOperationBehavior));
-        } catch (TruffleFatalException exception) {
-            errorProfile.enter();
-            return exception;
         } catch (StackOverflowError error) {
             errorProfile.enter();
             return new RaiseException(context, translateStackOverflow(context, error));
@@ -106,13 +103,13 @@ public abstract class TranslateExceptionNode extends RubyBaseNode {
     }
 
     @TruffleBoundary
-    private DynamicObject translateArithmeticException(RubyContext context, ArithmeticException exception) {
+    private RubyException translateArithmeticException(RubyContext context, ArithmeticException exception) {
         logJavaException(context, this, exception);
         return context.getCoreExceptions().zeroDivisionError(this, exception);
     }
 
     @TruffleBoundary
-    private DynamicObject translateStackOverflow(RubyContext context, StackOverflowError error) {
+    private RubyException translateStackOverflow(RubyContext context, StackOverflowError error) {
         if (context.getOptions().EXCEPTIONS_WARN_STACKOVERFLOW) {
             // We cannot afford to initialize the Log class
             System.err.print("[ruby] WARNING StackOverflowError\n");
@@ -123,7 +120,7 @@ public abstract class TranslateExceptionNode extends RubyBaseNode {
     }
 
     @TruffleBoundary
-    private DynamicObject translateOutOfMemory(RubyContext context, OutOfMemoryError error) {
+    private RubyException translateOutOfMemory(RubyContext context, OutOfMemoryError error) {
         if (context.getOptions().EXCEPTIONS_WARN_OUT_OF_MEMORY) {
             // We cannot afford to initialize the Log class
             System.err.print("[ruby] WARNING OutOfMemoryError\n");
@@ -134,7 +131,7 @@ public abstract class TranslateExceptionNode extends RubyBaseNode {
     }
 
     @TruffleBoundary
-    private DynamicObject translateIllegalArgument(RubyContext context, IllegalArgumentException exception) {
+    private RubyException translateIllegalArgument(RubyContext context, IllegalArgumentException exception) {
         logJavaException(context, this, exception);
 
         String message = exception.getMessage();
@@ -147,7 +144,7 @@ public abstract class TranslateExceptionNode extends RubyBaseNode {
     }
 
     @TruffleBoundary
-    private DynamicObject translateUnsupportedSpecialization(
+    private RubyException translateUnsupportedSpecialization(
             RubyContext context,
             UnsupportedSpecializationException exception,
             UnsupportedOperationBehavior unsupportedOperationBehavior) {
@@ -164,29 +161,29 @@ public abstract class TranslateExceptionNode extends RubyBaseNode {
 
             if (value == null) {
                 builder.append("null");
-            } else if (value instanceof DynamicObject) {
-                final DynamicObject dynamicObject = (DynamicObject) value;
+            } else if (value instanceof RubyDynamicObject) {
+                final RubyDynamicObject dynamicObject = (RubyDynamicObject) value;
 
-                builder.append(Layouts.MODULE.getFields(Layouts.BASIC_OBJECT.getLogicalClass(dynamicObject)).getName());
+                builder.append(dynamicObject.getLogicalClass().fields.getName());
                 builder.append("(");
                 builder.append(value.getClass().getName());
                 builder.append(")");
 
-                if (RubyGuards.isRubyArray(value)) {
-                    final DynamicObject array = (DynamicObject) value;
+                if (value instanceof RubyArray) {
+                    final RubyArray array = (RubyArray) value;
                     builder.append("[");
 
-                    if (Layouts.ARRAY.getStore(array) == null) {
+                    if (array.store == null) {
                         builder.append("null");
                     } else {
-                        builder.append(Layouts.ARRAY.getStore(array).getClass().getName());
+                        builder.append(array.store.getClass().getName());
                     }
 
                     builder.append(",");
-                    builder.append(Layouts.ARRAY.getSize(array));
+                    builder.append(array.size);
                     builder.append("]");
                 } else if (RubyGuards.isRubyHash(value)) {
-                    final Object store = Layouts.HASH.getStore((DynamicObject) value);
+                    final Object store = ((RubyHash) value).store;
 
                     if (store == null) {
                         builder.append("[null]");
@@ -221,7 +218,7 @@ public abstract class TranslateExceptionNode extends RubyBaseNode {
     }
 
     @TruffleBoundary
-    private DynamicObject translateThrowable(RubyContext context, Throwable throwable) {
+    private RubyException translateThrowable(RubyContext context, Throwable throwable) {
         if (throwable instanceof AssertionError) {
             throw (AssertionError) throwable;
         }
@@ -237,11 +234,6 @@ public abstract class TranslateExceptionNode extends RubyBaseNode {
             }
         }
 
-        Throwable t = throwable;
-        if (t instanceof JavaException) {
-            t = t.getCause();
-        }
-
         // NOTE (eregon, 2 Feb. 2018): This could maybe be modeled as translating each exception to
         // a Ruby one and linking them with Ruby Exception#cause.
         // But currently we and MRI do not display the cause message or backtrace by default.
@@ -249,6 +241,7 @@ public abstract class TranslateExceptionNode extends RubyBaseNode {
         final StringBuilder builder = new StringBuilder();
         boolean firstException = true;
         Backtrace lastBacktrace = null;
+        Throwable t = throwable;
 
         while (t != null) {
             if (t.getClass().getSimpleName().equals("LazyStackTrace")) {
@@ -267,7 +260,7 @@ public abstract class TranslateExceptionNode extends RubyBaseNode {
 
             if (t instanceof RaiseException) {
                 // A Ruby exception as a cause of a Java or C-ext exception
-                final DynamicObject rubyException = ((RaiseException) t).getException();
+                final RubyException rubyException = ((RaiseException) t).getException();
 
                 // Add the backtrace in the message as otherwise we would only see the
                 // internalError() backtrace.
@@ -275,7 +268,7 @@ public abstract class TranslateExceptionNode extends RubyBaseNode {
                         context,
                         EnumSet.noneOf(FormattingFlags.class));
                 final String formattedBacktrace = formatter
-                        .formatBacktrace(rubyException, Layouts.EXCEPTION.getBacktrace(rubyException));
+                        .formatBacktrace(rubyException, rubyException.backtrace);
                 builder.append(formattedBacktrace).append('\n');
             } else {
                 // Java exception, print it formatted like a Ruby exception

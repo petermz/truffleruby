@@ -10,15 +10,14 @@
 package org.truffleruby.core.cast;
 
 import org.jcodings.Encoding;
-import org.truffleruby.Layouts;
-import org.truffleruby.core.encoding.EncodingOperations;
-import org.truffleruby.core.string.StringOperations;
+import org.truffleruby.core.encoding.RubyEncoding;
+import org.truffleruby.core.regexp.RubyRegexp;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.core.symbol.RubySymbol;
 import org.truffleruby.language.RubyContextNode;
 
 import com.oracle.truffle.api.dsl.Fallback;
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.object.DynamicObject;
 
 /** Take a Ruby object that has an encoding and extracts the Java-level encoding object. */
 public abstract class ToEncodingNode extends RubyContextNode {
@@ -29,9 +28,9 @@ public abstract class ToEncodingNode extends RubyContextNode {
 
     public abstract Encoding executeToEncoding(Object value);
 
-    @Specialization(guards = "isRubyString(value)")
-    protected Encoding stringToEncoding(DynamicObject value) {
-        return StringOperations.encoding(value);
+    @Specialization
+    protected Encoding stringToEncoding(RubyString value) {
+        return value.rope.getEncoding();
     }
 
     @Specialization
@@ -39,14 +38,14 @@ public abstract class ToEncodingNode extends RubyContextNode {
         return value.getRope().getEncoding();
     }
 
-    @Specialization(guards = "isRubyRegexp(value)")
-    protected Encoding regexpToEncoding(DynamicObject value) {
-        return Layouts.REGEXP.getRegex(value).getEncoding();
+    @Specialization
+    protected Encoding regexpToEncoding(RubyRegexp value) {
+        return value.regex.getEncoding();
     }
 
-    @Specialization(guards = "isRubyEncoding(value)")
-    protected Encoding rubyEncodingToEncoding(DynamicObject value) {
-        return EncodingOperations.getEncoding(value);
+    @Specialization
+    protected Encoding rubyEncodingToEncoding(RubyEncoding value) {
+        return value.encoding;
     }
 
     @Fallback

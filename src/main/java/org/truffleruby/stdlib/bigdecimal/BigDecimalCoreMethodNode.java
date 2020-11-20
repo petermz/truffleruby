@@ -9,59 +9,52 @@
  */
 package org.truffleruby.stdlib.bigdecimal;
 
-import java.math.BigDecimal;
-import java.math.RoundingMode;
-
-import org.truffleruby.Layouts;
-import org.truffleruby.builtins.CoreMethodNode;
-import org.truffleruby.core.cast.IntegerCastNode;
-import org.truffleruby.core.numeric.BigDecimalOps;
-import org.truffleruby.language.NotProvided;
-import org.truffleruby.language.RubyGuards;
-import org.truffleruby.language.dispatch.CallDispatchHeadNode;
-
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
-import com.oracle.truffle.api.object.DynamicObject;
+import org.truffleruby.builtins.CoreMethodNode;
+import org.truffleruby.core.cast.IntegerCastNode;
+import org.truffleruby.core.klass.RubyClass;
+import org.truffleruby.core.numeric.BigDecimalOps;
+import org.truffleruby.language.NotProvided;
+import org.truffleruby.language.dispatch.DispatchNode;
 import org.truffleruby.utils.Utils;
+
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 
 public abstract class BigDecimalCoreMethodNode extends CoreMethodNode {
 
     @Child private CreateBigDecimalNode createBigDecimal;
-    @Child private CallDispatchHeadNode limitCall;
+    @Child private DispatchNode limitCall;
     @Child private IntegerCastNode limitIntegerCast;
-    @Child private CallDispatchHeadNode roundModeCall;
+    @Child private DispatchNode roundModeCall;
     @Child private IntegerCastNode roundModeIntegerCast;
 
-    public static boolean isNormal(DynamicObject value) {
-        return Layouts.BIG_DECIMAL.getType(value) == BigDecimalType.NORMAL;
+    public static boolean isNormal(RubyBigDecimal value) {
+        return value.type == BigDecimalType.NORMAL;
     }
 
-    public static boolean isNormalRubyBigDecimal(DynamicObject value) {
-        return RubyGuards.isRubyBigDecimal(value) && Layouts.BIG_DECIMAL.getType(value) == BigDecimalType.NORMAL;
+    public static boolean isSpecial(RubyBigDecimal value) {
+        return !isNormal(value);
     }
 
-    public static boolean isSpecialRubyBigDecimal(DynamicObject value) {
-        return RubyGuards.isRubyBigDecimal(value) && Layouts.BIG_DECIMAL.getType(value) != BigDecimalType.NORMAL;
+    public static boolean isNormalZero(RubyBigDecimal value) {
+        return BigDecimalOps.compare(value.value, BigDecimal.ZERO) == 0;
     }
 
-    public static boolean isNormalZero(DynamicObject value) {
-        return BigDecimalOps.compare(Layouts.BIG_DECIMAL.getValue(value), BigDecimal.ZERO) == 0;
+    public static boolean isNan(RubyBigDecimal value) {
+        return value.type == BigDecimalType.NAN;
     }
 
-    public static boolean isNan(DynamicObject value) {
-        return Layouts.BIG_DECIMAL.getType(value) == BigDecimalType.NAN;
-    }
-
-    protected DynamicObject createBigDecimal(Object value) {
+    protected RubyBigDecimal createBigDecimal(Object value) {
         return createBigDecimal(value, true);
     }
 
-    protected DynamicObject createBigDecimal(Object value, boolean strict) {
+    protected RubyBigDecimal createBigDecimal(Object value, boolean strict) {
         return getCreateBigDecimal().executeCreate(value, NotProvided.INSTANCE, strict);
     }
 
-    protected DynamicObject createBigDecimal(Object value, int digits, boolean strict) {
+    protected RubyBigDecimal createBigDecimal(Object value, int digits, boolean strict) {
         return getCreateBigDecimal().executeCreate(value, digits, strict);
     }
 
@@ -71,7 +64,7 @@ public abstract class BigDecimalCoreMethodNode extends CoreMethodNode {
                 getRoundModeCall().call(getBigDecimalClass(), "mode", 256)));
     }
 
-    protected DynamicObject getBigDecimalClass() {
+    protected RubyClass getBigDecimalClass() {
         return coreLibrary().bigDecimalClass;
     }
 
@@ -127,10 +120,10 @@ public abstract class BigDecimalCoreMethodNode extends CoreMethodNode {
         return createBigDecimal;
     }
 
-    private CallDispatchHeadNode getLimitCall() {
+    private DispatchNode getLimitCall() {
         if (limitCall == null) {
             CompilerDirectives.transferToInterpreterAndInvalidate();
-            limitCall = insert(CallDispatchHeadNode.createPrivate());
+            limitCall = insert(DispatchNode.create());
         }
 
         return limitCall;
@@ -145,10 +138,10 @@ public abstract class BigDecimalCoreMethodNode extends CoreMethodNode {
         return limitIntegerCast;
     }
 
-    private CallDispatchHeadNode getRoundModeCall() {
+    private DispatchNode getRoundModeCall() {
         if (roundModeCall == null) {
             CompilerDirectives.transferToInterpreterAndInvalidate();
-            roundModeCall = insert(CallDispatchHeadNode.createPrivate());
+            roundModeCall = insert(DispatchNode.create());
         }
 
         return roundModeCall;

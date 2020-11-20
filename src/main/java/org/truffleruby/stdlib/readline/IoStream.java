@@ -9,14 +9,13 @@
  */
 package org.truffleruby.stdlib.readline;
 
-import java.io.InputStream;
 import java.io.OutputStream;
 
+import org.graalvm.shadowed.org.jline.utils.NonBlockingInputStream;
 import org.truffleruby.RubyContext;
 import org.truffleruby.core.adapters.InputStreamAdapter;
 import org.truffleruby.core.adapters.OutputStreamAdapter;
-
-import com.oracle.truffle.api.object.DynamicObject;
+import org.truffleruby.core.support.RubyIO;
 
 /** A simple file descriptor -> IO stream class.
  *
@@ -25,11 +24,11 @@ public class IoStream {
 
     private final RubyContext context;
     private final int fd;
-    private final DynamicObject io;
-    private InputStream in;
+    private final RubyIO io;
+    private NonBlockingInputStream in;
     private OutputStream out;
 
-    public IoStream(RubyContext context, int fd, DynamicObject io) {
+    public IoStream(RubyContext context, int fd, RubyIO io) {
         this.context = context;
         this.fd = fd;
         this.io = io;
@@ -39,11 +38,11 @@ public class IoStream {
         return fd;
     }
 
-    public DynamicObject getIo() {
+    public RubyIO getIo() {
         return io;
     }
 
-    public InputStream getIn() {
+    public NonBlockingInputStream getIn() {
         if (in == null) {
             // Always use the InputStreamAdapter as reading from System.in with
             // FileInputStream.readBytes() is not interruptible.

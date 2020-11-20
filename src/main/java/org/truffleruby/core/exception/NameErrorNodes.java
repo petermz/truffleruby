@@ -9,18 +9,20 @@
  */
 package org.truffleruby.core.exception;
 
-import org.truffleruby.Layouts;
+import com.oracle.truffle.api.dsl.CachedLanguage;
+import org.truffleruby.RubyLanguage;
 import org.truffleruby.builtins.CoreMethod;
 import org.truffleruby.builtins.CoreMethodArrayArgumentsNode;
 import org.truffleruby.builtins.CoreModule;
 import org.truffleruby.builtins.Primitive;
 import org.truffleruby.builtins.PrimitiveArrayArgumentsNode;
+import org.truffleruby.core.klass.RubyClass;
 import org.truffleruby.language.Visibility;
 import org.truffleruby.language.control.RaiseException;
-import org.truffleruby.language.objects.AllocateObjectNode;
+import org.truffleruby.language.objects.AllocateHelperNode;
 
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.object.DynamicObject;
+import com.oracle.truffle.api.object.Shape;
 
 @CoreModule(value = "NameError", isClass = true)
 public abstract class NameErrorNodes {
@@ -28,14 +30,15 @@ public abstract class NameErrorNodes {
     @CoreMethod(names = { "__allocate__", "__layout_allocate__" }, constructor = true, visibility = Visibility.PRIVATE)
     public abstract static class AllocateNode extends CoreMethodArrayArgumentsNode {
 
-        @Child private AllocateObjectNode allocateObjectNode = AllocateObjectNode.create();
+        @Child private AllocateHelperNode allocateNode = AllocateHelperNode.create();
 
         @Specialization
-        protected DynamicObject allocateNameError(DynamicObject rubyClass) {
-            return allocateObjectNode
-                    .allocate(
-                            rubyClass,
-                            Layouts.NAME_ERROR.build(nil, null, null, nil, null, null, null, nil));
+        protected RubyNameError allocateNameError(RubyClass rubyClass,
+                @CachedLanguage RubyLanguage language) {
+            final Shape shape = allocateNode.getCachedShape(rubyClass);
+            final RubyNameError instance = new RubyNameError(rubyClass, shape, nil, null, nil, null, nil);
+            allocateNode.trace(instance, this, language);
+            return instance;
         }
 
     }
@@ -44,8 +47,8 @@ public abstract class NameErrorNodes {
     public abstract static class NameNode extends CoreMethodArrayArgumentsNode {
 
         @Specialization
-        protected Object name(DynamicObject self) {
-            return Layouts.NAME_ERROR.getName(self);
+        protected Object name(RubyNameError self) {
+            return self.name;
         }
 
     }
@@ -54,8 +57,8 @@ public abstract class NameErrorNodes {
     public abstract static class ReceiverNode extends CoreMethodArrayArgumentsNode {
 
         @Specialization
-        protected Object receiver(DynamicObject self) {
-            final Object receiver = Layouts.NAME_ERROR.getReceiver(self);
+        protected Object receiver(RubyNameError self) {
+            final Object receiver = self.receiver;
 
             // TODO BJF July 21, 2016 Implement name error in message field
 
@@ -71,8 +74,8 @@ public abstract class NameErrorNodes {
     public abstract static class NameSetNode extends PrimitiveArrayArgumentsNode {
 
         @Specialization
-        protected Object setName(DynamicObject error, Object name) {
-            Layouts.NAME_ERROR.setName(error, name);
+        protected Object setName(RubyNameError error, Object name) {
+            error.name = name;
             return name;
         }
 
@@ -82,8 +85,8 @@ public abstract class NameErrorNodes {
     public abstract static class ReceiverSetNode extends PrimitiveArrayArgumentsNode {
 
         @Specialization
-        protected Object setReceiver(DynamicObject error, Object receiver) {
-            Layouts.NAME_ERROR.setReceiver(error, receiver);
+        protected Object setReceiver(RubyNameError error, Object receiver) {
+            error.receiver = receiver;
             return receiver;
         }
 

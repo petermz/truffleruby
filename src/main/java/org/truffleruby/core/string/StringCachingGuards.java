@@ -10,23 +10,12 @@
 package org.truffleruby.core.string;
 
 import org.truffleruby.core.rope.Rope;
-import org.truffleruby.language.RubyGuards;
-
-import com.oracle.truffle.api.object.DynamicObject;
 
 public abstract class StringCachingGuards {
 
-    public static Rope privatizeRope(DynamicObject string) {
-        if (RubyGuards.isRubyString(string)) {
-            // TODO (nirvdrum 25-Jan-16) Should we flatten the rope to avoid caching a potentially deep rope tree?
-            return StringOperations.rope(string);
-        } else {
-            return null;
-        }
-    }
-
-    public static int ropeLength(Rope rope) {
-        return rope.byteLength();
+    public static Rope privatizeRope(RubyString string) {
+        // TODO (nirvdrum 25-Jan-16) Should we flatten the rope to avoid caching a potentially deep rope tree?
+        return string.rope;
     }
 
 }

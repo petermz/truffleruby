@@ -1,3 +1,73 @@
+# 20.3.0
+
+New features:
+
+
+Bug fixes:
+
+* Handle foreign null object as falsy value (#1902, @ssnickolay)
+* Fixed return value of `Enumerable#first` with multiple yielded arguments (#2056, @LillianZ).
+* Improve reliability of the post install hook by disabling RubyGems (#2075).
+* Fixed top level exception handler to print exception cause (#2013).
+* Fixed issue when extending FFI from File (#2094).
+* Fixed issue with `Kernel#freeze` not freezing singleton class (#2093).
+* Fixed `String#encode` with options issue (#2091, #2095, @LillianZ)
+* Fixed issue with `spawn` when `:close` redirect is used (#2097).
+* Fixed `coverage` issue when `*eval` is used (#2078).
+* Use expanded load paths for feature matching (#1501).
+* Fixed handling of post arguments for `super()` (#2111).
+* Fixed `SystemStackError` sometimes replaced by an internal Java `NoClassDefFoundError` on JVM (#1743).
+* Fixed constant/identifier detection in lexer for non-ASCII encodings (#2079, #2102, @ivoanjo).
+* Fixed parsing of `--jvm` as an application argument (#2108).
+* Fix `rb_rescue2` to ignore the end marker `(VALUE)0` (#2127, #2130).
+* Fix `String#{chomp, chomp!}` issue with invalid encoded strings (#2133).
+* Fix status and output when SystemExit is subclassed and raised (#2128)
+
+Compatibility:
+
+* Run `at_exit` handlers even if parsing the main script fails (#2047).
+* Load required libraries (`-r`) before parsing the main script (#2047).
+* `String#split` supports block (#2052, @ssnickolay)
+* Implemented `String#{grapheme_clusters, each_grapheme_cluster}`.
+* Fix the caller location for `#method_added` (#2059).
+* Fix issue with `Float#round` when `self` is `-0.0`.
+* Fix `String#unpack` issue with `m0` format (#2065).
+* Fix issue with `File.absolute_path` returning a path to current directory (#2062).
+* Update `Range#cover?` to handle `Range` parameter.
+* Fix `String#{casecmp, casecmp?}` parameter conversion.
+* Fix `Regexp` issue which raised syntax error instead of `RegexpError` (#2066).
+* Handle `Object#autoload` when autoload itself (#1616, @ssnickolay)
+* Skip upgraded default gems while loading RubyGems (#2075).
+* Verify that gem paths are correct before loading RubyGems (#2075).
+* Implement `rb_ivar_count`.
+* Implemented `rb_yield_values2`.
+* Implemented `Digest::Base#{update, <<}` (#2100).
+* Pass the final `super` specs (#2104, @chrisseaton).
+* Fix arity for arguments with optional kwargs (#1669, @ssnickolay)
+* Fix arity for `Proc` (#2098, @ssnickolay)
+* Check bounds for `FFI::Pointer` accesses when the size of the memory behind is known. 
+* Implement negative line numbers for eval (#1482).
+* Support refinements for `#to_s` called by string interpolation (#2110, @ssnickolay)
+* Module#using raises error in method scope (#2112, @ssnickolay)
+* `File#path` now returns a new mutable String on every call like MRI (#2115).
+* Avoid infinite recursion when redefining `Warning#warn` and calling `Kernel#warn` (#2109).
+* Convert objects with `#to_path` in `$LOAD_PATH` (#2119).
+* Handle the functions being native for `rb_thread_call_without_gvl()` (#2090).
+* Support refinements for Kernel#respond_to? (#2120, @ssnickolay)
+* JCodings has been updated from 1.0.45 to 1.0.55.
+* Joni has been updated from 2.1.30 to 2.1.40.
+
+Performance:
+
+* Calls with a literal block are no longer always split but instead the decision is made by the Truffle splitting heuristic.
+* `Symbol#to_proc` is now AST-inlined in order to not rely on splitting and to avoid needing the caller frame to find refinements which apply.
+* `Symbol#to_proc` is now globally cached per Symbol and refinements, to avoid creating many redundant `CallTargets`.
+* Setting and access to the special variables `$~` and `$_` has been refactored to require less splitting.
+
+Changes:
+
+* Migrated from JLine 2 to JLine 3 for the `readline` standard library.
+
 # 20.2.0
 
 New features:

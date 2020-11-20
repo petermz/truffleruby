@@ -38,10 +38,9 @@ import org.jcodings.specific.UTF8Encoding;
 import org.joni.WarnCallback;
 import org.truffleruby.RubyContext;
 import org.truffleruby.core.rope.Rope;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.core.string.StringOperations;
-import org.truffleruby.language.control.JavaException;
-
-import com.oracle.truffle.api.object.DynamicObject;
+import org.truffleruby.language.control.RaiseException;
 
 public class RubyWarnings implements WarnCallback {
 
@@ -105,13 +104,13 @@ public class RubyWarnings implements WarnCallback {
         if (context.getCoreLibrary().isLoaded()) {
             final Object warning = context.getCoreLibrary().warningModule;
             final Rope messageRope = StringOperations.encodeRope(message, UTF8Encoding.INSTANCE);
-            final DynamicObject messageString = StringOperations.createString(context, messageRope);
+            final RubyString messageString = StringOperations.createString(context, messageRope);
             context.send(warning, "warn", messageString);
         } else {
             try {
                 context.getEnv().err().write(message.getBytes(StandardCharsets.UTF_8));
             } catch (IOException e) {
-                throw new JavaException(e);
+                throw new RaiseException(context, context.getCoreExceptions().ioError(e, null));
             }
         }
     }

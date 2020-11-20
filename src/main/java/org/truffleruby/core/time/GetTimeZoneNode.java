@@ -34,17 +34,16 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import com.oracle.truffle.api.CompilerDirectives;
-import org.truffleruby.core.string.StringOperations;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.language.RubyContextNode;
 import org.truffleruby.language.RubyGuards;
 import org.truffleruby.language.control.RaiseException;
-import org.truffleruby.language.dispatch.CallDispatchHeadNode;
+import org.truffleruby.language.dispatch.DispatchNode;
 import org.truffleruby.parser.Helpers;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.utilities.CyclicAssumption;
 
 public abstract class GetTimeZoneNode extends RubyContextNode {
@@ -57,7 +56,7 @@ public abstract class GetTimeZoneNode extends RubyContextNode {
         TZ_UNCHANGED.invalidate();
     }
 
-    @Child private CallDispatchHeadNode lookupEnvNode = CallDispatchHeadNode.createPrivate();
+    @Child private DispatchNode lookupEnvNode = DispatchNode.create();
 
     public abstract TimeZoneAndName executeGetTimeZone();
 
@@ -69,14 +68,14 @@ public abstract class GetTimeZoneNode extends RubyContextNode {
     }
 
     protected Object getTZ() {
-        return lookupEnvNode.call(coreLibrary().getENV(), "[]", coreStrings().TZ.createInstance());
+        return lookupEnvNode.call(coreLibrary().getENV(), "[]", coreStrings().TZ.createInstance(getContext()));
     }
 
     @TruffleBoundary
     protected TimeZoneAndName getTimeZone(Object tz) {
         String tzString = "";
         if (RubyGuards.isRubyString(tz)) {
-            tzString = StringOperations.getString((DynamicObject) tz);
+            tzString = ((RubyString) tz).getJavaString();
         }
 
         if (tz == nil) {

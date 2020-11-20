@@ -386,12 +386,12 @@ class Enumerator
     end
 
     def grep(pattern, &block)
-      binding = block ? block.binding : Primitive.caller_binding
+      s = block ? Primitive.proc_special_variables(block) : Primitive.caller_special_variables
 
       Lazy.new(self, nil) do |yielder, *args|
         val = args.length >= 2 ? args : args.first
         matches = pattern === val
-        Truffle::RegexpOperations.set_last_match($~, binding)
+        Primitive.regexp_last_match_set(s, $~)
 
         if matches
           if block
@@ -404,12 +404,12 @@ class Enumerator
     end
 
     def grep_v(pattern, &block)
-      binding = block ? block.binding : Primitive.caller_binding
+      s = block ? Primitive.proc_special_variables(block) : Primitive.caller_special_variables
 
       Lazy.new(self, nil) do |yielder, *args|
         val = args.length >= 2 ? args : args.first
         matches = pattern === val
-        Truffle::RegexpOperations.set_last_match($~, binding)
+        Primitive.regexp_last_match_set(s, $~)
 
         unless matches
           if block
@@ -704,7 +704,7 @@ class Enumerator::Chain < Enumerator
   end
 
   def inspect
-    return "#<#{self.class.name}: ...>" if Thread.detect_recursion(self) do
+    return "#<#{self.class.name}: ...>" if Truffle::ThreadOperations.detect_recursion(self) do
       return "#<#{self.class.name}: #{@enums}>"
     end
   end

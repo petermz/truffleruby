@@ -9,29 +9,33 @@
  */
 package org.truffleruby.language.backtrace;
 
-import java.io.PrintStream;
-import java.util.ArrayList;
-import java.util.EnumSet;
-import java.util.List;
-
-import org.jcodings.specific.UTF8Encoding;
-import org.truffleruby.Layouts;
-import org.truffleruby.RubyContext;
-import org.truffleruby.core.array.ArrayHelpers;
-import org.truffleruby.core.exception.ExceptionOperations;
-import org.truffleruby.core.string.StringOperations;
-import org.truffleruby.core.string.StringUtils;
-import org.truffleruby.language.RubyGuards;
-import org.truffleruby.language.RubyRootNode;
-import org.truffleruby.language.methods.TranslateExceptionNode;
-
+import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.TruffleStackTraceElement;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.RootNode;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.source.Source;
 import com.oracle.truffle.api.source.SourceSection;
+import org.jcodings.specific.UTF8Encoding;
+import org.truffleruby.RubyContext;
+import org.truffleruby.SuppressFBWarnings;
+import org.truffleruby.core.array.ArrayHelpers;
+import org.truffleruby.core.array.RubyArray;
+import org.truffleruby.core.exception.ExceptionOperations;
+import org.truffleruby.core.exception.RubyException;
+import org.truffleruby.core.string.RubyString;
+import org.truffleruby.core.string.StringOperations;
+import org.truffleruby.core.string.StringUtils;
+import org.truffleruby.language.RubyRootNode;
+import org.truffleruby.language.methods.TranslateExceptionNode;
+import org.truffleruby.parser.RubySource;
+
+import java.io.OutputStream;
+import java.io.PrintStream;
+import java.io.UnsupportedEncodingException;
+import java.util.ArrayList;
+import java.util.EnumSet;
+import java.util.List;
 
 public class BacktraceFormatter {
 
@@ -79,7 +83,7 @@ public class BacktraceFormatter {
     /** For debug purposes. */
     public static boolean isApplicationCode(RubyContext context, SourceSection sourceSection) {
         return isUserSourceSection(context, sourceSection) &&
-                !RubyContext.getPath(sourceSection.getSource()).contains("/lib/stdlib/rubygems");
+                !context.getSourcePath(sourceSection.getSource()).contains("/lib/stdlib/rubygems");
     }
 
     public BacktraceFormatter(RubyContext context, EnumSet<FormattingFlags> flags) {
@@ -88,44 +92,29 @@ public class BacktraceFormatter {
     }
 
     @TruffleBoundary
-    public void printRubyExceptionMessageOnEnvStderr(DynamicObject rubyException) {
-        final PrintStream printer = new PrintStream(context.getEnv().err(), true);
-        final Object message = context.send(
-                context.getCoreLibrary().truffleExceptionOperationsModule,
-                "message_and_class",
-                rubyException,
-                false);
-        final Object messageString;
-        if (RubyGuards.isRubyString(message)) {
-            messageString = StringOperations.getString((DynamicObject) message);
+    public void printTopLevelRubyExceptionOnEnvStderr(RubyException rubyException) {
+        final Backtrace backtrace = rubyException.backtrace;
+        if (backtrace != null && backtrace.getStackTrace().length == 0) {
+            // An Exception with a non-null empty stacktrace, so an Exception from Truffle::Boot.main
+            printRubyExceptionOnEnvStderr("truffleruby: ", rubyException);
         } else {
-            messageString = message.toString();
+            printRubyExceptionOnEnvStderr("", rubyException);
         }
-        printer.println("truffleruby: " + messageString);
     }
 
+    @SuppressFBWarnings("OS")
     @TruffleBoundary
-    public void printRubyExceptionOnEnvStderr(String info, DynamicObject rubyException) {
-        final PrintStream printer = new PrintStream(context.getEnv().err(), true);
+    public void printRubyExceptionOnEnvStderr(String info, RubyException rubyException) {
+        final PrintStream printer = printStreamFor(context.getEnv().err());
         if (!info.isEmpty()) {
             printer.print(info);
         }
 
-        // can be null, if @custom_backtrace is used
-        final Backtrace backtrace = Layouts.EXCEPTION.getBacktrace(rubyException);
-        final String formatted;
-        if (backtrace != null) {
-            formatted = formatBacktrace(rubyException, backtrace);
-        } else {
-            // formatBacktrace() uses top order, so use the same order here to be consistent
-            final Object fullMessage = context.send(rubyException, "full_message_order_top");
-            if (RubyGuards.isRubyString(fullMessage)) {
-                formatted = StringOperations.getString((DynamicObject) fullMessage);
-            } else {
-                formatted = fullMessage.toString();
-            }
-        }
-
+        final Object fullMessage = context.send(
+                context.getCoreLibrary().truffleExceptionOperationsModule,
+                "get_formatted_backtrace",
+                rubyException);
+        final String formatted = fullMessage != null ? ((RubyString) fullMessage).getJavaString() : "<no message>";
         if (formatted.endsWith("\n")) {
             printer.print(formatted);
         } else {
@@ -133,30 +122,39 @@ public class BacktraceFormatter {
         }
     }
 
+    @SuppressFBWarnings("OS")
     @TruffleBoundary
     public void printBacktraceOnEnvStderr(Node currentNode) {
         final Backtrace backtrace = context.getCallStack().getBacktrace(currentNode);
-        final PrintStream printer = new PrintStream(context.getEnv().err(), true);
+        final PrintStream printer = printStreamFor(context.getEnv().err());
         printer.println(formatBacktrace(null, backtrace));
     }
 
+    public static PrintStream printStreamFor(OutputStream outputStream) {
+        try {
+            return new PrintStream(outputStream, true, "UTF-8");
+        } catch (UnsupportedEncodingException e) {
+            throw CompilerDirectives.shouldNotReachHere(e);
+        }
+    }
+
     /** Format the backtrace as a String with \n between each line, but no trailing \n. */
-    public String formatBacktrace(DynamicObject exception, Backtrace backtrace) {
+    public String formatBacktrace(RubyException exception, Backtrace backtrace) {
         return formatBacktrace(exception, backtrace, Integer.MAX_VALUE);
     }
 
     /** Formats at most {@code length} elements of the backtrace (starting from the top of the call stack) as a String
      * with \n between each line, but no trailing \n. */
     @TruffleBoundary
-    public String formatBacktrace(DynamicObject exception, Backtrace backtrace, int length) {
+    public String formatBacktrace(RubyException exception, Backtrace backtrace, int length) {
         return String.join("\n", formatBacktraceAsStringArray(exception, backtrace, length));
     }
 
-    public DynamicObject formatBacktraceAsRubyStringArray(DynamicObject exception, Backtrace backtrace) {
+    public RubyArray formatBacktraceAsRubyStringArray(RubyException exception, Backtrace backtrace) {
         return formatBacktraceAsRubyStringArray(exception, backtrace, Integer.MAX_VALUE);
     }
 
-    public DynamicObject formatBacktraceAsRubyStringArray(DynamicObject exception, Backtrace backtrace, int length) {
+    public RubyArray formatBacktraceAsRubyStringArray(RubyException exception, Backtrace backtrace, int length) {
         final String[] lines = formatBacktraceAsStringArray(exception, backtrace, length);
 
         final Object[] array = new Object[lines.length];
@@ -171,7 +169,7 @@ public class BacktraceFormatter {
     }
 
     @TruffleBoundary
-    private String[] formatBacktraceAsStringArray(DynamicObject exception, Backtrace backtrace, int length) {
+    private String[] formatBacktraceAsStringArray(RubyException exception, Backtrace backtrace, int length) {
         if (backtrace == null) {
             backtrace = context.getCallStack().getBacktrace(null);
         }
@@ -199,7 +197,7 @@ public class BacktraceFormatter {
     }
 
     @TruffleBoundary
-    public String formatLine(TruffleStackTraceElement[] stackTrace, int n, DynamicObject exception) {
+    public String formatLine(TruffleStackTraceElement[] stackTrace, int n, RubyException exception) {
         try {
             return formatLineInternal(stackTrace, n, exception);
         } catch (Exception e) {
@@ -210,7 +208,7 @@ public class BacktraceFormatter {
         }
     }
 
-    private String formatLineInternal(TruffleStackTraceElement[] stackTrace, int n, DynamicObject exception) {
+    private String formatLineInternal(TruffleStackTraceElement[] stackTrace, int n, RubyException exception) {
         final TruffleStackTraceElement element = stackTrace[n];
 
         final StringBuilder builder = new StringBuilder();
@@ -241,13 +239,9 @@ public class BacktraceFormatter {
             if (reportedSourceSection == null) {
                 builder.append("???");
             } else {
-                if (isRubyCore(context, reportedSourceSection.getSource())) {
-                    builder.append(formatCorePath(context, reportedSourceSection));
-                } else {
-                    builder.append(RubyContext.getPath(reportedSourceSection.getSource()));
-                }
+                builder.append(context.getSourcePath(reportedSourceSection.getSource()));
                 builder.append(":");
-                builder.append(reportedSourceSection.getStartLine());
+                builder.append(RubySource.getStartLineAdjusted(context, reportedSourceSection));
             }
             builder.append(":in `");
             builder.append(reportedName);
@@ -275,7 +269,7 @@ public class BacktraceFormatter {
 
         if (sourceSection != null) {
             final Source source = sourceSection.getSource();
-            final String path = RubyContext.getPath(source);
+            final String path = context.getSourcePath(source);
 
             builder.append(path);
             if (sourceSection.isAvailable()) {
@@ -305,13 +299,12 @@ public class BacktraceFormatter {
         return builder.toString();
     }
 
-    private String formatException(DynamicObject exception) {
+    private String formatException(RubyException exception) {
         final StringBuilder builder = new StringBuilder();
 
         final String message = ExceptionOperations.messageToString(context, exception);
 
-        final String exceptionClass = Layouts.MODULE
-                .getFields(Layouts.BASIC_OBJECT.getLogicalClass(exception))
+        final String exceptionClass = exception.getLogicalClass().fields
                 .getName();
 
         // Show the exception class at the end of the first line of the message
@@ -348,24 +341,13 @@ public class BacktraceFormatter {
         return sourceSection != null && sourceSection.isAvailable();
     }
 
-    public static boolean isCore(RubyContext context, SourceSection sourceSection) {
-        assert isAvailable(sourceSection);
-        return isRubyCore(context, sourceSection.getSource());
-    }
-
-    public static String formatCorePath(RubyContext context, SourceSection sourceSection) {
-        assert isCore(context, sourceSection);
-        final String path = RubyContext.getPath(sourceSection.getSource());
-        return "<internal:core> " + path.substring(context.getCoreLibrary().coreLoadPath.length() + 1);
-    }
-
-    private static boolean isRubyCore(RubyContext context, Source source) {
-        final String path = RubyContext.getPath(source);
-        return path != null && path.startsWith(context.getOptions().CORE_LOAD_PATH);
-    }
-
     public static boolean isUserSourceSection(RubyContext context, SourceSection sourceSection) {
-        return isAvailable(sourceSection) && !isCore(context, sourceSection);
+        return isAvailable(sourceSection) && !isRubyCore(context, sourceSection.getSource());
+    }
+
+    public static boolean isRubyCore(RubyContext context, Source source) {
+        final String path = RubyContext.getPath(source);
+        return path.startsWith(context.getCoreLibrary().coreLoadPath);
     }
 
     private Node getRootOrTopmostNode(Node node) {

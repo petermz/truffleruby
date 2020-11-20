@@ -61,6 +61,7 @@ import org.jcodings.specific.ASCIIEncoding;
 import org.jcodings.specific.USASCIIEncoding;
 import org.jcodings.specific.UTF8Encoding;
 import org.truffleruby.RubyContext;
+import org.truffleruby.SuppressFBWarnings;
 import org.truffleruby.collections.ByteArrayBuilder;
 import org.truffleruby.core.array.ArrayUtils;
 import org.truffleruby.core.rope.BytesKey;
@@ -121,11 +122,11 @@ public class RubyLexer implements MagicCommentHandler {
     }
 
     protected void ambiguousOperator(String op, String syn) {
-        warnings.warn(
+        warnings.warning(
                 getFile(),
                 getPosition().toSourceSection(src.getSource()).getStartLine(),
                 "`" + op + "' after local variable or literal is interpreted as binary operator");
-        warnings.warn(
+        warnings.warning(
                 getFile(),
                 getPosition().toSourceSection(src.getSource()).getStartLine(),
                 "even though it seems like " + syn);
@@ -707,6 +708,7 @@ public class RubyLexer implements MagicCommentHandler {
         return -1; // not-reached
     }
 
+    @SuppressFBWarnings({ "INT", "DB" })
     private int hereDocumentIdentifier() {
         int c = nextc();
         int term;
@@ -801,6 +803,7 @@ public class RubyLexer implements MagicCommentHandler {
      *
      * @return Description of the Returned Value */
     @SuppressWarnings("fallthrough")
+    @SuppressFBWarnings("SF")
     private int yylex() {
         int c;
         boolean spaceSeen = false;
@@ -1558,6 +1561,7 @@ public class RubyLexer implements MagicCommentHandler {
     }
 
     @SuppressWarnings("fallthrough")
+    @SuppressFBWarnings("SF")
     private int dollar() {
         setState(EXPR_END);
         newtok(true);
@@ -1798,7 +1802,7 @@ public class RubyLexer implements MagicCommentHandler {
             }
             tempVal = createTokenRope();
 
-            if (result == 0 && Character.isUpperCase(tempVal.get(0) & 0xFF)) {
+            if (result == 0 && isFirstCodepointUppercase(tempVal)) {
                 result = RubyParser.tCONSTANT;
             } else {
                 result = RubyParser.tIDENTIFIER;
@@ -2353,6 +2357,7 @@ public class RubyLexer implements MagicCommentHandler {
      * @param c The first character of the number.
      * @return A int constant wich represents a token. */
     @SuppressWarnings("fallthrough")
+    @SuppressFBWarnings("SF")
     private int parseNumber(int c) {
         setState(EXPR_END);
         newtok(true);
@@ -2657,6 +2662,7 @@ public class RubyLexer implements MagicCommentHandler {
     }
 
     @SuppressWarnings("fallthrough")
+    @SuppressFBWarnings("SF")
     public int readEscape() {
         int c = nextc();
 
@@ -2924,6 +2930,10 @@ public class RubyLexer implements MagicCommentHandler {
 
     public String getFile() {
         return src.getSourcePath();
+    }
+
+    public int getLineOffset() {
+        return src.getLineOffset();
     }
 
     public int getHeredocIndent() {
@@ -3493,11 +3503,11 @@ public class RubyLexer implements MagicCommentHandler {
     }
 
     public void validateFormalIdentifier(Rope identifier) {
-        int first = identifier.get(0) & 0xFF;
-
-        if (Character.isUpperCase(first)) {
+        if (isFirstCodepointUppercase(identifier)) {
             compile_error("formal argument cannot be a constant");
         }
+
+        int first = identifier.get(0) & 0xFF;
 
         switch (first) {
             case '@':
@@ -3665,4 +3675,18 @@ public class RubyLexer implements MagicCommentHandler {
         return isARG() && spaceSeen && !Character.isWhitespace(c);
     }
 
+    /** Encoding-aware (including multi-byte encodings) check of first codepoint of a given rope, usually to determine
+     * if it is a constant */
+    private boolean isFirstCodepointUppercase(Rope rope) {
+        Encoding ropeEncoding = rope.encoding;
+        int firstByte = rope.get(0) & 0xFF;
+
+        if (ropeEncoding.isAsciiCompatible() && isASCII(firstByte)) {
+            return StringSupport.isAsciiUppercase((byte) firstByte);
+        } else {
+            byte[] ropeBytes = rope.getBytes();
+            int firstCharacter = ropeEncoding.mbcToCode(ropeBytes, 0, ropeBytes.length);
+            return ropeEncoding.isUpper(firstCharacter);
+        }
+    }
 }

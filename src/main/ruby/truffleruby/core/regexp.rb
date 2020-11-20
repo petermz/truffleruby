@@ -72,13 +72,13 @@ class Regexp
     encodings = patterns.map { |r| convert(r).encoding }
     last_enc = encodings.pop
     encodings.each do |encoding|
-      raise ArgumentError, "incompatible encodings: #{encoding} and #{last_enc}" unless Encoding.compatible?(last_enc, encoding)
+      raise ArgumentError, "incompatible encodings: #{encoding} and #{last_enc}" unless Primitive.encoding_compatible?(last_enc, encoding)
       last_enc = encoding
     end
   end
 
   def self.last_match(index=nil)
-    match = Truffle::RegexpOperations.last_match(Primitive.caller_binding)
+    match = Primitive.regexp_last_match_get(Primitive.caller_special_variables)
     if index
       index = Primitive.rb_to_int index
       match[index] if match
@@ -145,23 +145,19 @@ class Regexp
   end
 
   def =~(str)
-    unless str
-      Truffle::RegexpOperations.set_last_match(nil, Primitive.caller_binding)
-      return nil
-    end
-    result = Truffle::RegexpOperations.match(self, str, 0)
-    Truffle::RegexpOperations.set_last_match(result, Primitive.caller_binding)
+    result = str ? Truffle::RegexpOperations.match(self, str, 0) : nil
+    Primitive.regexp_last_match_set(Primitive.caller_special_variables, result)
 
     result.begin(0) if result
   end
 
   def match(str, pos=0)
     unless str
-      Truffle::RegexpOperations.set_last_match(nil, Primitive.caller_binding)
+      Primitive.regexp_last_match_set(Primitive.caller_special_variables, nil)
       return nil
     end
     result = Truffle::RegexpOperations.match(self, str, pos)
-    Truffle::RegexpOperations.set_last_match(result, Primitive.caller_binding)
+    Primitive.regexp_last_match_set(Primitive.caller_special_variables, result)
 
     if result && block_given?
       yield result
@@ -180,16 +176,16 @@ class Regexp
     elsif !other.kind_of? String
       other = Truffle::Type.rb_check_convert_type other, String, :to_str
       unless other
-        Truffle::RegexpOperations.set_last_match(nil, Primitive.caller_binding)
+        Primitive.regexp_last_match_set(Primitive.caller_special_variables, nil)
         return false
       end
     end
 
     if match = match_from(other, 0)
-      Truffle::RegexpOperations.set_last_match(match, Primitive.caller_binding)
+      Primitive.regexp_last_match_set(Primitive.caller_special_variables, match)
       true
     else
-      Truffle::RegexpOperations.set_last_match(nil, Primitive.caller_binding)
+      Primitive.regexp_last_match_set(Primitive.caller_special_variables, nil)
       false
     end
   end
@@ -215,10 +211,10 @@ class Regexp
   end
 
   def ~
-    line = Truffle::IOOperations.last_line(Primitive.caller_binding)
+    line = Primitive.io_last_line_get(Primitive.caller_special_variables)
 
     unless line.kind_of?(String)
-      Truffle::RegexpOperations.set_last_match(nil, Primitive.caller_binding)
+      Primitive.regexp_last_match_set(Primitive.caller_special_variables, nil)
       return nil
     end
 
@@ -232,7 +228,7 @@ class Regexp
 
   def match_from(str, count)
     return nil unless str
-    search_region(str, count, str.bytesize, true)
+    Truffle::RegexpOperations.search_region(self, str, count, str.bytesize, true)
   end
 
   def option_to_string(option)
@@ -324,13 +320,6 @@ class MatchData
     names.collect { |name| [name, self[name]] }.to_h
   end
 
-  def pre_match_from(idx)
-    source = Primitive.match_data_get_source(self)
-    return source.byteslice(0, 0) if self.byte_begin(0) == 0
-    nd = self.byte_begin(0) - 1
-    source.byteslice(idx, nd-idx+1)
-  end
-
   def begin(index)
     backref = if String === index || Symbol === index
                 names_to_backref = Hash[Primitive.regexp_names(self.regexp)]
@@ -355,10 +344,6 @@ class MatchData
     Primitive.match_data_end(self, backref)
   end
 
-  def collapsing?
-    self.byte_begin(0) == self.byte_end(0)
-  end
-
   def inspect
     str = "#<MatchData \"#{self[0]}\""
     idx = 0
@@ -379,34 +364,39 @@ class MatchData
 end
 
 Truffle::KernelOperations.define_hooked_variable(
-  :'$~',
-  -> b { Truffle::RegexpOperations.last_match(b) },
-  -> v, b { Truffle::RegexpOperations.set_last_match(v, b) })
+  :$~,
+  -> s { Primitive.regexp_last_match_get(s) },
+  -> v, s {
+    unless Primitive.nil?(v) || Primitive.object_kind_of?(v, MatchData)
+      raise TypeError, "Wrong argument type #{v} (expected MatchData)"
+    end
+    Primitive.regexp_last_match_set(s, v)
+  })
 
 Truffle::KernelOperations.define_hooked_variable(
   :'$`',
-  -> b { match = Truffle::RegexpOperations.last_match(b)
+  -> s { match = Primitive.regexp_last_match_get(s)
          match.pre_match if match },
   -> { raise SyntaxError, "Can't set variable $`" },
-  -> b { 'global-variable' if Truffle::RegexpOperations.last_match(b) })
+  -> s { 'global-variable' if Primitive.regexp_last_match_get(s) })
 
 Truffle::KernelOperations.define_hooked_variable(
   :"$'",
-  -> b { match = Truffle::RegexpOperations.last_match(b)
+  -> s { match = Primitive.regexp_last_match_get(s)
          match.post_match if match },
   -> { raise SyntaxError, "Can't set variable $'" },
-  -> b { 'global-variable' if Truffle::RegexpOperations.last_match(b) })
+  -> s { 'global-variable' if Primitive.regexp_last_match_get(s) })
 
 Truffle::KernelOperations.define_hooked_variable(
   :'$&',
-  -> b { match = Truffle::RegexpOperations.last_match(b)
+  -> s { match = Primitive.regexp_last_match_get(s)
          match[0] if match },
   -> { raise SyntaxError, "Can't set variable $&" },
-  -> b { 'global-variable' if Truffle::RegexpOperations.last_match(b) })
+  -> s { 'global-variable' if Primitive.regexp_last_match_get(s) })
 
 Truffle::KernelOperations.define_hooked_variable(
   :'$+',
-  -> b { match = Truffle::RegexpOperations.last_match(b)
+  -> s { match = Primitive.regexp_last_match_get(s)
          match.captures.reverse.find { |m| !Primitive.nil?(m) } if match },
   -> { raise SyntaxError, "Can't set variable $+" },
-  -> b { 'global-variable' if Truffle::RegexpOperations.last_match(b) })
+  -> s { 'global-variable' if Primitive.regexp_last_match_get(s) })

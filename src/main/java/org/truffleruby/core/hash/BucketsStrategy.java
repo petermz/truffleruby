@@ -9,14 +9,12 @@
  */
 package org.truffleruby.core.hash;
 
-import java.util.Iterator;
+import java.util.Set;
 
-import org.truffleruby.Layouts;
 import org.truffleruby.RubyContext;
-import org.truffleruby.language.RubyGuards;
+import org.truffleruby.language.objects.ObjectGraph;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
-import com.oracle.truffle.api.object.DynamicObject;
 
 public abstract class BucketsStrategy {
 
@@ -76,22 +74,22 @@ public abstract class BucketsStrategy {
         return (hashed & SIGN_BIT_MASK) % bucketsCount;
     }
 
-    public static void addNewEntry(RubyContext context, DynamicObject hash, int hashed, Object key, Object value) {
+    public static void addNewEntry(RubyContext context, RubyHash hash, int hashed, Object key, Object value) {
         assert HashGuards.isBucketHash(hash);
         assert HashOperations.verifyStore(context, hash);
 
-        final Entry[] buckets = (Entry[]) Layouts.HASH.getStore(hash);
+        final Entry[] buckets = (Entry[]) hash.store;
 
         final Entry entry = new Entry(hashed, key, value);
 
-        if (Layouts.HASH.getFirstInSequence(hash) == null) {
-            Layouts.HASH.setFirstInSequence(hash, entry);
+        if (hash.firstInSequence == null) {
+            hash.firstInSequence = entry;
         } else {
-            Layouts.HASH.getLastInSequence(hash).setNextInSequence(entry);
-            entry.setPreviousInSequence(Layouts.HASH.getLastInSequence(hash));
+            hash.lastInSequence.setNextInSequence(entry);
+            entry.setPreviousInSequence(hash.lastInSequence);
         }
 
-        Layouts.HASH.setLastInSequence(hash, entry);
+        hash.lastInSequence = entry;
 
         final int bucketIndex = BucketsStrategy.getBucketIndex(hashed, buckets.length);
 
@@ -107,20 +105,20 @@ public abstract class BucketsStrategy {
             previousInLookup.setNextInLookup(entry);
         }
 
-        Layouts.HASH.setSize(hash, Layouts.HASH.getSize(hash) + 1);
+        hash.size += 1;
 
         assert HashOperations.verifyStore(context, hash);
     }
 
     @TruffleBoundary
-    public static void resize(RubyContext context, DynamicObject hash) {
+    public static void resize(RubyContext context, RubyHash hash) {
         assert HashGuards.isBucketHash(hash);
         assert HashOperations.verifyStore(context, hash);
 
-        final int bucketsCount = capacityGreaterThan(Layouts.HASH.getSize(hash)) * OVERALLOCATE_FACTOR;
+        final int bucketsCount = capacityGreaterThan(hash.size) * OVERALLOCATE_FACTOR;
         final Entry[] newEntries = new Entry[bucketsCount];
 
-        Entry entry = Layouts.HASH.getFirstInSequence(hash);
+        Entry entry = hash.firstInSequence;
 
         while (entry != null) {
             final int bucketIndex = getBucketIndex(entry.getHashed(), bucketsCount);
@@ -140,56 +138,31 @@ public abstract class BucketsStrategy {
             entry = entry.getNextInSequence();
         }
 
-        int size = Layouts.HASH.getSize(hash);
-        Entry firstInSequence = Layouts.HASH.getFirstInSequence(hash);
-        Entry lastInSequence = Layouts.HASH.getLastInSequence(hash);
-        Layouts.HASH.setStore(hash, newEntries);
-        Layouts.HASH.setSize(hash, size);
-        Layouts.HASH.setFirstInSequence(hash, firstInSequence);
-        Layouts.HASH.setLastInSequence(hash, lastInSequence);
+        hash.store = newEntries;
 
         assert HashOperations.verifyStore(context, hash);
     }
 
-    public static Iterator<KeyValue> iterateKeyValues(final Entry firstInSequence) {
-        return new Iterator<KeyValue>() {
-
-            private Entry entry = firstInSequence;
-
-            @Override
-            public boolean hasNext() {
-                return entry != null;
-            }
-
-            @Override
-            public KeyValue next() {
-                assert hasNext();
-                final KeyValue entryResult = new KeyValue(entry.getKey(), entry.getValue());
-                entry = entry.getNextInSequence();
-                return entryResult;
-            }
-
-            @Override
-            public void remove() {
-                throw new UnsupportedOperationException();
-            }
-
-        };
+    public static void getAdjacentObjects(Set<Object> reachable, Entry firstInSequence) {
+        Entry entry = firstInSequence;
+        while (entry != null) {
+            ObjectGraph.addProperty(reachable, entry.getKey());
+            ObjectGraph.addProperty(reachable, entry.getValue());
+            entry = entry.getNextInSequence();
+        }
     }
 
-    public static void copyInto(RubyContext context, DynamicObject from, DynamicObject to) {
-        assert RubyGuards.isRubyHash(from);
+    public static void copyInto(RubyContext context, RubyHash from, RubyHash to) {
         assert HashGuards.isBucketHash(from);
         assert HashOperations.verifyStore(context, from);
-        assert RubyGuards.isRubyHash(to);
         assert HashOperations.verifyStore(context, to);
 
-        final Entry[] newEntries = new Entry[((Entry[]) Layouts.HASH.getStore(from)).length];
+        final Entry[] newEntries = new Entry[((Entry[]) from.store).length];
 
         Entry firstInSequence = null;
         Entry lastInSequence = null;
 
-        Entry entry = Layouts.HASH.getFirstInSequence(from);
+        Entry entry = from.firstInSequence;
 
         while (entry != null) {
             final Entry newEntry = new Entry(entry.getHashed(), entry.getKey(), entry.getValue());
@@ -213,11 +186,11 @@ public abstract class BucketsStrategy {
             entry = entry.getNextInSequence();
         }
 
-        int size = Layouts.HASH.getSize(from);
-        Layouts.HASH.setStore(to, newEntries);
-        Layouts.HASH.setSize(to, size);
-        Layouts.HASH.setFirstInSequence(to, firstInSequence);
-        Layouts.HASH.setLastInSequence(to, lastInSequence);
+        int size = from.size;
+        to.store = newEntries;
+        to.size = size;
+        to.firstInSequence = firstInSequence;
+        to.lastInSequence = lastInSequence;
         assert HashOperations.verifyStore(context, to);
     }
 

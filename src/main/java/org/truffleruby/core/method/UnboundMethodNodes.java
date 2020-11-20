@@ -9,17 +9,21 @@
  */
 package org.truffleruby.core.method;
 
+import com.oracle.truffle.api.dsl.CachedLanguage;
 import org.jcodings.specific.UTF8Encoding;
-import org.truffleruby.Layouts;
-import org.truffleruby.RubyContext;
+import org.truffleruby.RubyLanguage;
 import org.truffleruby.builtins.CoreMethod;
 import org.truffleruby.builtins.CoreMethodArrayArgumentsNode;
 import org.truffleruby.builtins.CoreModule;
 import org.truffleruby.builtins.UnaryCoreMethodNode;
 import org.truffleruby.core.Hashing;
+import org.truffleruby.core.array.RubyArray;
+import org.truffleruby.core.klass.RubyClass;
 import org.truffleruby.core.module.MethodLookupResult;
 import org.truffleruby.core.module.ModuleOperations;
+import org.truffleruby.core.module.RubyModule;
 import org.truffleruby.core.rope.CodeRange;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.core.string.StringNodes;
 import org.truffleruby.core.symbol.RubySymbol;
 import org.truffleruby.language.RubyGuards;
@@ -28,6 +32,7 @@ import org.truffleruby.language.arguments.ArgumentDescriptorUtils;
 import org.truffleruby.language.control.RaiseException;
 import org.truffleruby.language.methods.CanBindMethodToModuleNode;
 import org.truffleruby.language.methods.InternalMethod;
+import org.truffleruby.language.objects.AllocateHelperNode;
 import org.truffleruby.language.objects.MetaClassNode;
 import org.truffleruby.parser.ArgumentDescriptor;
 import org.truffleruby.utils.Utils;
@@ -35,7 +40,6 @@ import org.truffleruby.utils.Utils;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.BranchProfile;
 import com.oracle.truffle.api.source.SourceSection;
 
@@ -45,16 +49,14 @@ public abstract class UnboundMethodNodes {
     @CoreMethod(names = { "==", "eql?" }, required = 1)
     public abstract static class EqualNode extends CoreMethodArrayArgumentsNode {
 
-        @Specialization(guards = "isRubyUnboundMethod(other)")
-        protected boolean equal(DynamicObject self, DynamicObject other) {
-            return Layouts.UNBOUND_METHOD.getOrigin(self) == Layouts.UNBOUND_METHOD.getOrigin(other) &&
-                    MethodNodes.areInternalMethodEqual(
-                            Layouts.UNBOUND_METHOD.getMethod(self),
-                            Layouts.UNBOUND_METHOD.getMethod(other));
+        @Specialization
+        protected boolean equal(RubyUnboundMethod self, RubyUnboundMethod other) {
+            return self.origin == other.origin &&
+                    MethodNodes.areInternalMethodEqual(self.method, other.method);
         }
 
         @Specialization(guards = "!isRubyUnboundMethod(other)")
-        protected boolean equal(DynamicObject self, Object other) {
+        protected boolean equal(RubyUnboundMethod self, Object other) {
             return false;
         }
 
@@ -64,8 +66,8 @@ public abstract class UnboundMethodNodes {
     public abstract static class ArityNode extends CoreMethodArrayArgumentsNode {
 
         @Specialization
-        protected int arity(DynamicObject method) {
-            return Layouts.UNBOUND_METHOD.getMethod(method).getSharedMethodInfo().getArity().getArityNumber();
+        protected int arity(RubyUnboundMethod unboundMethod) {
+            return unboundMethod.method.getArityNumber();
         }
 
     }
@@ -73,19 +75,20 @@ public abstract class UnboundMethodNodes {
     @CoreMethod(names = "bind", required = 1)
     public abstract static class BindNode extends CoreMethodArrayArgumentsNode {
 
+        @Child private AllocateHelperNode allocateNode = AllocateHelperNode.create();
+
         @Specialization
-        protected DynamicObject bind(DynamicObject unboundMethod, Object object,
+        protected RubyMethod bind(RubyUnboundMethod unboundMethod, Object object,
                 @Cached MetaClassNode metaClassNode,
                 @Cached CanBindMethodToModuleNode canBindMethodToModuleNode,
-                @Cached BranchProfile errorProfile) {
-            final DynamicObject objectMetaClass = metaClassNode.executeMetaClass(object);
+                @Cached BranchProfile errorProfile,
+                @CachedLanguage RubyLanguage language) {
+            final RubyClass objectMetaClass = metaClassNode.execute(object);
 
             if (!canBindMethodToModuleNode
-                    .executeCanBindMethodToModule(Layouts.UNBOUND_METHOD.getMethod(unboundMethod), objectMetaClass)) {
+                    .executeCanBindMethodToModule(unboundMethod.method, objectMetaClass)) {
                 errorProfile.enter();
-                final DynamicObject declaringModule = Layouts.UNBOUND_METHOD
-                        .getMethod(unboundMethod)
-                        .getDeclaringModule();
+                final RubyModule declaringModule = unboundMethod.method.getDeclaringModule();
                 if (RubyGuards.isSingletonClass(declaringModule)) {
                     throw new RaiseException(getContext(), coreExceptions().typeError(
                             "singleton method called for a different object",
@@ -94,15 +97,17 @@ public abstract class UnboundMethodNodes {
                     throw new RaiseException(getContext(), coreExceptions().typeError(
                             Utils.concat(
                                     "bind argument must be an instance of ",
-                                    Layouts.MODULE.getFields(declaringModule).getName()),
+                                    declaringModule.fields.getName()),
                             this));
                 }
             }
-
-            return Layouts.METHOD.createMethod(
-                    coreLibrary().methodFactory,
+            final RubyMethod instance = new RubyMethod(
+                    coreLibrary().methodClass,
+                    RubyLanguage.methodShape,
                     object,
-                    Layouts.UNBOUND_METHOD.getMethod(unboundMethod));
+                    unboundMethod.method);
+            allocateNode.trace(instance, this, language);
+            return instance;
         }
 
     }
@@ -112,10 +117,10 @@ public abstract class UnboundMethodNodes {
 
         @TruffleBoundary
         @Specialization
-        protected long hash(DynamicObject rubyMethod) {
-            final InternalMethod method = Layouts.UNBOUND_METHOD.getMethod(rubyMethod);
+        protected long hash(RubyUnboundMethod rubyMethod) {
+            final InternalMethod method = rubyMethod.method;
             long h = getContext().getHashing(this).start(method.getDeclaringModule().hashCode());
-            h = Hashing.update(h, Layouts.UNBOUND_METHOD.getOrigin(rubyMethod).hashCode());
+            h = Hashing.update(h, rubyMethod.origin.hashCode());
             h = Hashing.update(h, MethodNodes.hashInternalMethod(method));
             return Hashing.end(h);
         }
@@ -126,8 +131,8 @@ public abstract class UnboundMethodNodes {
     public abstract static class NameNode extends CoreMethodArrayArgumentsNode {
 
         @Specialization
-        protected RubySymbol name(DynamicObject unboundMethod) {
-            return getSymbol(Layouts.UNBOUND_METHOD.getMethod(unboundMethod).getName());
+        protected RubySymbol name(RubyUnboundMethod unboundMethod) {
+            return getSymbol(unboundMethod.method.getName());
         }
 
     }
@@ -137,8 +142,8 @@ public abstract class UnboundMethodNodes {
     public abstract static class OriginNode extends CoreMethodArrayArgumentsNode {
 
         @Specialization
-        protected DynamicObject origin(DynamicObject unboundMethod) {
-            return Layouts.UNBOUND_METHOD.getOrigin(unboundMethod);
+        protected RubyModule origin(RubyUnboundMethod unboundMethod) {
+            return unboundMethod.origin;
         }
 
     }
@@ -147,8 +152,8 @@ public abstract class UnboundMethodNodes {
     public abstract static class OwnerNode extends CoreMethodArrayArgumentsNode {
 
         @Specialization
-        protected DynamicObject owner(DynamicObject unboundMethod) {
-            return Layouts.UNBOUND_METHOD.getMethod(unboundMethod).getDeclaringModule();
+        protected RubyModule owner(RubyUnboundMethod unboundMethod) {
+            return unboundMethod.method.getDeclaringModule();
         }
 
     }
@@ -158,9 +163,8 @@ public abstract class UnboundMethodNodes {
 
         @TruffleBoundary
         @Specialization
-        protected DynamicObject parameters(DynamicObject method) {
-            final ArgumentDescriptor[] argsDesc = Layouts.UNBOUND_METHOD
-                    .getMethod(method)
+        protected RubyArray parameters(RubyUnboundMethod method) {
+            final ArgumentDescriptor[] argsDesc = method.method
                     .getSharedMethodInfo()
                     .getArgumentDescriptors();
 
@@ -176,17 +180,16 @@ public abstract class UnboundMethodNodes {
 
         @TruffleBoundary
         @Specialization
-        protected Object sourceLocation(DynamicObject unboundMethod) {
-            SourceSection sourceSection = Layouts.UNBOUND_METHOD
-                    .getMethod(unboundMethod)
+        protected Object sourceLocation(RubyUnboundMethod unboundMethod) {
+            SourceSection sourceSection = unboundMethod.method
                     .getSharedMethodInfo()
                     .getSourceSection();
 
             if (!sourceSection.isAvailable()) {
                 return nil;
             } else {
-                DynamicObject file = makeStringNode.executeMake(
-                        RubyContext.getPath(sourceSection.getSource()),
+                RubyString file = makeStringNode.executeMake(
+                        getContext().getSourcePath(sourceSection.getSource()),
                         UTF8Encoding.INSTANCE,
                         CodeRange.CR_UNKNOWN);
                 Object[] objects = new Object[]{ file, sourceSection.getStartLine() };
@@ -200,17 +203,22 @@ public abstract class UnboundMethodNodes {
     public abstract static class SuperMethodNode extends CoreMethodArrayArgumentsNode {
 
         @Specialization
-        protected Object superMethod(DynamicObject unboundMethod) {
-            InternalMethod internalMethod = Layouts.UNBOUND_METHOD.getMethod(unboundMethod);
-            DynamicObject origin = Layouts.UNBOUND_METHOD.getOrigin(unboundMethod);
+        protected Object superMethod(RubyUnboundMethod unboundMethod,
+                @Cached AllocateHelperNode allocateHelperNode,
+                @CachedLanguage RubyLanguage language) {
+            InternalMethod internalMethod = unboundMethod.method;
+            RubyModule origin = unboundMethod.origin;
             MethodLookupResult superMethod = ModuleOperations.lookupSuperMethod(internalMethod, origin);
             if (!superMethod.isDefined()) {
                 return nil;
             } else {
-                return Layouts.UNBOUND_METHOD.createUnboundMethod(
-                        coreLibrary().unboundMethodFactory,
+                final RubyUnboundMethod instance = new RubyUnboundMethod(
+                        coreLibrary().unboundMethodClass,
+                        RubyLanguage.unboundMethodShape,
                         superMethod.getMethod().getDeclaringModule(),
                         superMethod.getMethod());
+                allocateHelperNode.trace(instance, this, language);
+                return instance;
             }
         }
 
@@ -221,7 +229,7 @@ public abstract class UnboundMethodNodes {
 
         @TruffleBoundary
         @Specialization
-        protected DynamicObject allocate(DynamicObject rubyClass) {
+        protected Object allocate(RubyClass rubyClass) {
             throw new RaiseException(getContext(), coreExceptions().typeErrorAllocatorUndefinedFor(rubyClass, this));
         }
 

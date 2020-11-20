@@ -13,15 +13,16 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 import org.truffleruby.collections.ConcurrentOperations;
-import org.truffleruby.language.RubyContextNode;
+import org.truffleruby.core.module.RubyModule;
+import org.truffleruby.core.proc.RubyProc;
 import org.truffleruby.language.LexicalScope;
+import org.truffleruby.language.RubyContextNode;
 import org.truffleruby.language.Visibility;
 import org.truffleruby.language.arguments.RubyArguments;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.RootCallTarget;
 import com.oracle.truffle.api.frame.VirtualFrame;
-import com.oracle.truffle.api.object.DynamicObject;
 
 /** Define a method from a module body (module/class/class << self ... end). */
 public class ModuleBodyDefinitionNode extends RubyContextNode {
@@ -31,7 +32,7 @@ public class ModuleBodyDefinitionNode extends RubyContextNode {
     private final RootCallTarget callTarget;
     private final boolean captureBlock;
     private final boolean dynamicLexicalScope;
-    private final Map<DynamicObject, LexicalScope> lexicalScopes;
+    private final Map<RubyModule, LexicalScope> lexicalScopes;
 
     public ModuleBodyDefinitionNode(
             String name,
@@ -51,8 +52,8 @@ public class ModuleBodyDefinitionNode extends RubyContextNode {
         this(node.name, node.sharedMethodInfo, node.callTarget, node.captureBlock, node.dynamicLexicalScope);
     }
 
-    public InternalMethod createMethod(VirtualFrame frame, LexicalScope staticLexicalScope, DynamicObject module) {
-        final DynamicObject capturedBlock;
+    public InternalMethod createMethod(VirtualFrame frame, LexicalScope staticLexicalScope, RubyModule module) {
+        final RubyProc capturedBlock;
 
         if (captureBlock) {
             capturedBlock = RubyArguments.getBlock(frame);
@@ -77,12 +78,13 @@ public class ModuleBodyDefinitionNode extends RubyContextNode {
                 false,
                 null,
                 callTarget,
+                null,
                 capturedBlock);
     }
 
     @TruffleBoundary
     private LexicalScope prepareLexicalScope(LexicalScope staticLexicalScope, LexicalScope parentLexicalScope,
-            DynamicObject module) {
+            RubyModule module) {
         staticLexicalScope.unsafeSetLiveModule(module);
         if (!dynamicLexicalScope) {
             return staticLexicalScope;

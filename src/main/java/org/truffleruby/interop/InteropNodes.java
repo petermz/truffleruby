@@ -12,8 +12,11 @@ package org.truffleruby.interop;
 import java.io.IOException;
 import java.util.Map;
 
+import com.oracle.truffle.api.dsl.CachedContext;
+import com.oracle.truffle.api.frame.VirtualFrame;
+import com.oracle.truffle.api.interop.NodeLibrary;
 import org.jcodings.specific.UTF8Encoding;
-import org.truffleruby.Layouts;
+import org.truffleruby.RubyContext;
 import org.truffleruby.RubyLanguage;
 import org.truffleruby.builtins.CoreMethod;
 import org.truffleruby.builtins.CoreMethodArrayArgumentsNode;
@@ -23,10 +26,12 @@ import org.truffleruby.builtins.Primitive;
 import org.truffleruby.builtins.PrimitiveArrayArgumentsNode;
 import org.truffleruby.core.array.ArrayGuards;
 import org.truffleruby.core.array.ArrayUtils;
+import org.truffleruby.core.array.RubyArray;
 import org.truffleruby.core.array.library.ArrayStoreLibrary;
 import org.truffleruby.core.rope.CodeRange;
 import org.truffleruby.core.rope.Rope;
 import org.truffleruby.core.rope.RopeNodes;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.core.string.StringCachingGuards;
 import org.truffleruby.core.string.StringNodes;
 import org.truffleruby.core.string.StringOperations;
@@ -38,7 +43,6 @@ import org.truffleruby.language.RubyGuards;
 import org.truffleruby.language.RubyNode;
 import org.truffleruby.language.RubySourceNode;
 import org.truffleruby.language.Visibility;
-import org.truffleruby.language.control.JavaException;
 import org.truffleruby.language.control.RaiseException;
 import org.truffleruby.language.dispatch.DispatchNode;
 import org.truffleruby.shared.TruffleRuby;
@@ -62,34 +66,11 @@ import com.oracle.truffle.api.library.CachedLibrary;
 import com.oracle.truffle.api.nodes.DirectCallNode;
 import com.oracle.truffle.api.nodes.IndirectCallNode;
 import com.oracle.truffle.api.nodes.LanguageInfo;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.BranchProfile;
 import com.oracle.truffle.api.source.Source;
 
 @CoreModule("Truffle::Interop")
 public abstract class InteropNodes {
-
-    @CoreMethod(names = "import_file", onSingleton = true, required = 1)
-    public abstract static class ImportFileNode extends CoreMethodArrayArgumentsNode {
-
-        @TruffleBoundary
-        @Specialization(guards = "isRubyString(fileName)")
-        protected Object importFile(DynamicObject fileName) {
-            try {
-                //intern() to improve footprint
-                final TruffleFile file = getContext()
-                        .getEnv()
-                        .getPublicTruffleFile(StringOperations.getString(fileName).intern());
-                final Source source = Source.newBuilder(TruffleRuby.LANGUAGE_ID, file).build();
-                getContext().getEnv().parsePublic(source).call();
-            } catch (IOException e) {
-                throw new JavaException(e);
-            }
-
-            return nil;
-        }
-
-    }
 
     private abstract static class InteropCoreMethodArrayArgumentsNode extends CoreMethodArrayArgumentsNode {
         protected int getCacheLimit() {
@@ -101,6 +82,37 @@ public abstract class InteropNodes {
         protected int getCacheLimit() {
             return getContext().getOptions().METHOD_LOOKUP_CACHE;
         }
+    }
+
+    public static Object execute(Object receiver, Object[] args, InteropLibrary receivers,
+            TranslateInteropExceptionNode translateInteropExceptionNode) {
+        try {
+            return receivers.execute(receiver, args);
+        } catch (InteropException e) {
+            throw translateInteropExceptionNode.execute(e);
+        }
+    }
+
+    @CoreMethod(names = "import_file", onSingleton = true, required = 1)
+    public abstract static class ImportFileNode extends CoreMethodArrayArgumentsNode {
+
+        @TruffleBoundary
+        @Specialization
+        protected Object importFile(RubyString fileName) {
+            try {
+                //intern() to improve footprint
+                final TruffleFile file = getContext()
+                        .getEnv()
+                        .getPublicTruffleFile(fileName.getJavaString().intern());
+                final Source source = Source.newBuilder(TruffleRuby.LANGUAGE_ID, file).build();
+                getContext().getEnv().parsePublic(source).call();
+            } catch (IOException e) {
+                throw new RaiseException(getContext(), coreExceptions().ioError(e, this));
+            }
+
+            return nil;
+        }
+
     }
 
     @CoreMethod(names = "executable?", onSingleton = true, required = 1)
@@ -131,14 +143,8 @@ public abstract class InteropNodes {
                 @CachedLibrary("receiver") InteropLibrary receivers,
                 @Cached ForeignToRubyNode foreignToRubyNode,
                 @Cached TranslateInteropExceptionNode translateInteropException) {
-            final Object foreign;
-
-            try {
-                foreign = receivers.execute(receiver, rubyToForeignArgumentsNode.executeConvert(args));
-            } catch (InteropException e) {
-                throw translateInteropException.execute(e);
-            }
-
+            final Object[] convertedArgs = rubyToForeignArgumentsNode.executeConvert(args);
+            final Object foreign = InteropNodes.execute(receiver, convertedArgs, receivers, translateInteropException);
             return foreignToRubyNode.executeConvert(foreign);
         }
 
@@ -154,11 +160,7 @@ public abstract class InteropNodes {
         protected Object executeWithoutConversionForeignCached(Object receiver, Object[] args,
                 @CachedLibrary("receiver") InteropLibrary receivers,
                 @Cached TranslateInteropExceptionNode translateInteropException) {
-            try {
-                return receivers.execute(receiver, args);
-            } catch (InteropException e) {
-                throw translateInteropException.execute(e);
-            }
+            return InteropNodes.execute(receiver, args, receivers, translateInteropException);
         }
     }
 
@@ -283,12 +285,11 @@ public abstract class InteropNodes {
     @CoreMethod(names = "as_string", onSingleton = true, required = 1)
     public abstract static class AsStringNode extends InteropCoreMethodArrayArgumentsNode {
         @Specialization(limit = "getCacheLimit()")
-        protected DynamicObject asString(Object receiver,
+        protected RubyString asString(Object receiver,
                 @CachedLibrary("receiver") InteropLibrary receivers,
                 @Cached FromJavaStringNode fromJavaStringNode,
                 @Cached TranslateInteropExceptionNode translateInteropException) {
-
-            String string;
+            final String string;
             try {
                 string = receivers.asString(receiver);
             } catch (InteropException e) {
@@ -318,13 +319,13 @@ public abstract class InteropNodes {
     public abstract static class ToDisplayStringNode extends InteropCoreMethodArrayArgumentsNode {
 
         @Specialization(limit = "getCacheLimit()")
-        protected DynamicObject toDisplayString(Object receiver,
+        protected RubyString toDisplayString(Object receiver,
                 @CachedLibrary("receiver") InteropLibrary receivers,
                 @CachedLibrary(limit = "1") InteropLibrary asStrings,
                 @Cached FromJavaStringNode fromJavaStringNode,
                 @Cached TranslateInteropExceptionNode translateInteropException) {
-            Object displayString = receivers.toDisplayString(receiver, true);
-            String string;
+            final Object displayString = receivers.toDisplayString(receiver, true);
+            final String string;
             try {
                 string = asStrings.asString(displayString);
             } catch (InteropException e) {
@@ -545,7 +546,7 @@ public abstract class InteropNodes {
 
         abstract Object execute(Object receiver, Object identifier);
 
-        @Specialization(guards = "isRubySymbol(identifier) || isRubyString(identifier)", limit = "getCacheLimit()")
+        @Specialization(guards = "isRubySymbolOrString(identifier)", limit = "getCacheLimit()")
         protected Object readMember(Object receiver, Object identifier,
                 @CachedLibrary("receiver") InteropLibrary receivers,
                 @Cached TranslateInteropExceptionNode translateInteropException,
@@ -670,8 +671,8 @@ public abstract class InteropNodes {
 
         abstract Object execute(Object receiver, Object identifier);
 
-        @Specialization(guards = "isRubySymbol(identifier) || isRubyString(identifier)", limit = "getCacheLimit()")
-        protected Object readMember(Object receiver, DynamicObject identifier,
+        @Specialization(guards = "isRubySymbolOrString(identifier)", limit = "getCacheLimit()")
+        protected Object readMember(Object receiver, Object identifier,
                 @CachedLibrary("receiver") InteropLibrary receivers,
                 @Cached TranslateInteropExceptionNode translateInteropException,
                 @Cached ToJavaStringNode toJavaStringNode) {
@@ -702,7 +703,7 @@ public abstract class InteropNodes {
         abstract Object execute(Object receiver, Object identifier, Object value);
 
         @Specialization(
-                guards = "isRubySymbol(identifier) || isRubyString(identifier)",
+                guards = "isRubySymbolOrString(identifier)",
                 limit = "getCacheLimit()")
         protected Object write(Object receiver, Object identifier, Object value,
                 @CachedLibrary("receiver") InteropLibrary receivers,
@@ -758,7 +759,7 @@ public abstract class InteropNodes {
     @CoreMethod(names = "remove_member", onSingleton = true, required = 2)
     public abstract static class RemoveMemberNode extends InteropCoreMethodArrayArgumentsNode {
 
-        @Specialization(guards = "isRubySymbol(identifier) || isRubyString(identifier)", limit = "getCacheLimit()")
+        @Specialization(guards = "isRubySymbolOrString(identifier)", limit = "getCacheLimit()")
         protected Nil remove(Object receiver, Object identifier,
                 @CachedLibrary("receiver") InteropLibrary receivers,
                 @Cached ToJavaStringNode toJavaStringNode,
@@ -1030,9 +1031,9 @@ public abstract class InteropNodes {
     public abstract static class MimeTypeSupportedNode extends CoreMethodArrayArgumentsNode {
 
         @TruffleBoundary
-        @Specialization(guards = "isRubyString(mimeType)")
-        protected boolean isMimeTypeSupported(DynamicObject mimeType) {
-            return getContext().getEnv().isMimeTypeSupported(StringOperations.getString(mimeType));
+        @Specialization
+        protected boolean isMimeTypeSupported(RubyString mimeType) {
+            return getContext().getEnv().isMimeTypeSupported(mimeType.getJavaString());
         }
 
     }
@@ -1042,7 +1043,7 @@ public abstract class InteropNodes {
 
         @TruffleBoundary
         @Specialization
-        protected DynamicObject languages() {
+        protected RubyArray languages() {
             final Map<String, LanguageInfo> languages = getContext().getEnv().getPublicLanguages();
             final String[] languagesArray = languages.keySet().toArray(StringUtils.EMPTY_STRING_ARRAY);
             final Object[] rubyStringArray = new Object[languagesArray.length];
@@ -1073,12 +1074,10 @@ public abstract class InteropNodes {
 
         @Specialization(
                 guards = {
-                        "isRubyString(mimeType)",
-                        "isRubyString(source)",
-                        "mimeTypeEqualNode.execute(rope(mimeType), cachedMimeType)",
-                        "sourceEqualNode.execute(rope(source), cachedSource)" },
+                        "mimeTypeEqualNode.execute(mimeType.rope, cachedMimeType)",
+                        "sourceEqualNode.execute(source.rope, cachedSource)" },
                 limit = "getCacheLimit()")
-        protected Object evalCached(DynamicObject mimeType, DynamicObject source,
+        protected Object evalCached(RubyString mimeType, RubyString source,
                 @Cached("privatizeRope(mimeType)") Rope cachedMimeType,
                 @Cached("privatizeRope(source)") Rope cachedSource,
                 @Cached("create(parse(mimeType, source))") DirectCallNode callNode,
@@ -1087,16 +1086,16 @@ public abstract class InteropNodes {
             return callNode.call(EMPTY_ARGUMENTS);
         }
 
-        @Specialization(guards = { "isRubyString(mimeType)", "isRubyString(source)" }, replaces = "evalCached")
-        protected Object evalUncached(DynamicObject mimeType, DynamicObject source,
+        @Specialization(replaces = "evalCached")
+        protected Object evalUncached(RubyString mimeType, RubyString source,
                 @Cached IndirectCallNode callNode) {
             return callNode.call(parse(mimeType, source), EMPTY_ARGUMENTS);
         }
 
         @TruffleBoundary
-        protected CallTarget parse(DynamicObject mimeType, DynamicObject code) {
-            final String mimeTypeString = StringOperations.getString(mimeType);
-            final String codeString = StringOperations.getString(code);
+        protected CallTarget parse(RubyString mimeType, RubyString code) {
+            final String mimeTypeString = mimeType.getJavaString();
+            final String codeString = code.getJavaString();
             String language = Source.findLanguage(mimeTypeString);
             if (language == null) {
                 // Give the original string to get the nice exception from Truffle
@@ -1119,15 +1118,15 @@ public abstract class InteropNodes {
     @Primitive(name = "interop_eval_nfi")
     public abstract static class InteropEvalNFINode extends PrimitiveArrayArgumentsNode {
 
-        @Specialization(guards = "isRubyString(code)")
-        protected Object evalNFI(DynamicObject code,
+        @Specialization
+        protected Object evalNFI(RubyString code,
                 @Cached IndirectCallNode callNode) {
             return callNode.call(parse(code), EMPTY_ARGUMENTS);
         }
 
         @TruffleBoundary
-        protected CallTarget parse(DynamicObject code) {
-            final String codeString = StringOperations.getString(code);
+        protected CallTarget parse(RubyString code) {
+            final String codeString = code.getJavaString();
             final Source source = Source.newBuilder("nfi", codeString, "(eval)").build();
 
             try {
@@ -1216,16 +1215,16 @@ public abstract class InteropNodes {
     @ImportStatic(ArrayGuards.class)
     public abstract static class InteropToJavaArrayNode extends PrimitiveArrayArgumentsNode {
 
-        @Specialization(guards = { "isRubyArray(array)", "stores.accepts(getStore(array))" })
-        protected Object toJavaArray(DynamicObject array,
+        @Specialization(guards = "stores.accepts(array.store)")
+        protected Object toJavaArray(RubyArray array,
                 @CachedLibrary(limit = "storageStrategyLimit()") ArrayStoreLibrary stores) {
             return getContext().getEnv().asGuestValue(stores.toJavaArrayCopy(
-                    Layouts.ARRAY.getStore(array),
-                    Layouts.ARRAY.getSize(array)));
+                    array.store,
+                    array.size));
         }
 
         @Specialization(guards = "!isRubyArray(array)")
-        protected Object coerce(DynamicObject array) {
+        protected Object coerce(Object array) {
             return FAILURE;
         }
 
@@ -1235,16 +1234,16 @@ public abstract class InteropNodes {
     @ImportStatic(ArrayGuards.class)
     public abstract static class InteropToJavaListNode extends PrimitiveArrayArgumentsNode {
 
-        @Specialization(guards = { "isRubyArray(array)", "stores.accepts(getStore(array))" })
-        protected Object toJavaList(DynamicObject array,
+        @Specialization(guards = "stores.accepts(array.store)")
+        protected Object toJavaList(RubyArray array,
                 @CachedLibrary(limit = "storageStrategyLimit()") ArrayStoreLibrary stores) {
-            int size = Layouts.ARRAY.getSize(array);
-            Object[] copy = stores.boxedCopyOfRange(Layouts.ARRAY.getStore(array), 0, size);
+            int size = array.size;
+            Object[] copy = stores.boxedCopyOfRange(array.store, 0, size);
             return getContext().getEnv().asGuestValue(ArrayUtils.asList(copy));
         }
 
         @Specialization(guards = "!isRubyArray(array)")
-        protected Object coerce(DynamicObject array) {
+        protected Object coerce(Object array) {
             return FAILURE;
         }
 
@@ -1358,9 +1357,9 @@ public abstract class InteropNodes {
         }
 
         @TruffleBoundary
-        @Specialization(guards = "isRubyString(name)")
-        protected Object javaTypeString(DynamicObject name) {
-            return javaType(StringOperations.getString(name));
+        @Specialization
+        protected Object javaTypeString(RubyString name) {
+            return javaType(name.getJavaString());
         }
 
         private Object javaType(String name) {
@@ -1387,8 +1386,8 @@ public abstract class InteropNodes {
         }
 
         @TruffleBoundary
-        @Specialization
-        protected Object proxyForeignObject(Object delegate, DynamicObject logger) {
+        @Specialization(guards = "wasProvided(logger)")
+        protected Object proxyForeignObject(Object delegate, Object logger) {
             return new ProxyForeignObject(delegate, logger);
         }
 
@@ -1401,7 +1400,7 @@ public abstract class InteropNodes {
 
         @TruffleBoundary
         @Specialization
-        protected DynamicObject toString(Object value) {
+        protected RubyString toString(Object value) {
             return makeStringNode.executeMake(String.valueOf(value), UTF8Encoding.INSTANCE, CodeRange.CR_UNKNOWN);
         }
 
@@ -1428,6 +1427,52 @@ public abstract class InteropNodes {
             return getContext().getEnv().isPolyglotBindingsAccessAllowed();
         }
 
+    }
+
+    @Primitive(name = "current_scope")
+    public abstract static class GetCurrentScopeNode extends PrimitiveArrayArgumentsNode {
+
+        @Specialization
+        protected Object getScope(VirtualFrame frame,
+                @CachedLibrary(limit = "1") NodeLibrary nodeLibrary,
+                @Cached TranslateInteropExceptionNode translateInteropException) {
+            try {
+                return nodeLibrary.getScope(this, frame, true);
+            } catch (UnsupportedMessageException e) {
+                throw translateInteropException.execute(e);
+            }
+        }
+
+    }
+
+    @Primitive(name = "top_scope")
+    public abstract static class GetTopScopeNode extends PrimitiveArrayArgumentsNode {
+
+        @Specialization
+        protected Object getTopScope(
+                @CachedContext(RubyLanguage.class) RubyContext context) {
+            return context.getTopScopeObject();
+        }
+
+    }
+
+    @CoreMethod(names = "scope_parent", onSingleton = true, required = 1)
+    public abstract static class GetScopeParentNode extends InteropCoreMethodArrayArgumentsNode {
+
+        @Specialization(limit = "getCacheLimit()")
+        protected Object getScope(Object scope,
+                @CachedLibrary("scope") InteropLibrary interopLibrary,
+                @Cached TranslateInteropExceptionNode translateInteropException) {
+            if (interopLibrary.hasScopeParent(scope)) {
+                try {
+                    return interopLibrary.getScopeParent(scope);
+                } catch (UnsupportedMessageException e) {
+                    throw translateInteropException.execute(e);
+                }
+            } else {
+                return nil;
+            }
+        }
     }
 
 }

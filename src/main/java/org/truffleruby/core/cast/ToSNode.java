@@ -10,41 +10,40 @@
 package org.truffleruby.core.cast;
 
 import org.truffleruby.core.kernel.KernelNodes;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.language.RubyContextSourceNode;
-import org.truffleruby.language.RubyGuards;
 import org.truffleruby.language.RubyNode;
-import org.truffleruby.language.dispatch.CallDispatchHeadNode;
+import org.truffleruby.language.dispatch.DispatchNode;
 
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.NodeChild;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.frame.VirtualFrame;
-import com.oracle.truffle.api.object.DynamicObject;
 
 @NodeChild(value = "value", type = RubyNode.class)
 public abstract class ToSNode extends RubyContextSourceNode {
 
     @Child private KernelNodes.ToSNode kernelToSNode;
 
-    @Specialization(guards = "isRubyString(string)")
-    protected DynamicObject toS(DynamicObject string) {
+    @Specialization
+    protected RubyString toS(RubyString string) {
         return string;
     }
 
     @Specialization(guards = "!isRubyString(object)")
-    protected DynamicObject toSFallback(VirtualFrame frame, Object object,
-            @Cached("createPrivate()") CallDispatchHeadNode callToSNode) {
-        final Object value = callToSNode.call(object, "to_s");
+    protected RubyString toSFallback(VirtualFrame frame, Object object,
+            @Cached DispatchNode callToSNode) {
+        final Object value = callToSNode.dispatch(frame, object, "to_s", null, EMPTY_ARGUMENTS);
 
-        if (RubyGuards.isRubyString(value)) {
-            return (DynamicObject) value;
+        if (value instanceof RubyString) {
+            return (RubyString) value;
         } else {
             return kernelToS(object);
         }
     }
 
-    protected DynamicObject kernelToS(Object object) {
+    protected RubyString kernelToS(Object object) {
         if (kernelToSNode == null) {
             CompilerDirectives.transferToInterpreterAndInvalidate();
             kernelToSNode = insert(KernelNodes.ToSNode.create());

@@ -9,8 +9,7 @@
  */
 package org.truffleruby.language.globals;
 
-import org.truffleruby.Layouts;
-import org.truffleruby.core.binding.BindingNodes;
+import org.truffleruby.core.kernel.TruffleKernelNodes.GetSpecialVariableStorage;
 import org.truffleruby.language.RubyContextNode;
 import org.truffleruby.language.yield.YieldNode;
 
@@ -36,7 +35,7 @@ public abstract class IsDefinedGlobalVariableNode extends RubyContextNode {
     protected Object executeDefined(
             @Cached("getStorage()") GlobalVariableStorage storage) {
         if (storage.isDefined()) {
-            return coreStrings().GLOBAL_VARIABLE.createInstance();
+            return coreStrings().GLOBAL_VARIABLE.createInstance(getContext());
         } else {
             return nil;
         }
@@ -54,13 +53,14 @@ public abstract class IsDefinedGlobalVariableNode extends RubyContextNode {
     protected Object executeDefinedHooksWithBinding(VirtualFrame frame,
             @Cached("getStorage()") GlobalVariableStorage storage,
             @Cached("isDefinedArity(storage)") int arity,
-            @Cached YieldNode yieldNode) {
+            @Cached YieldNode yieldNode,
+            @Cached GetSpecialVariableStorage readStorage) {
         return yieldNode
-                .executeDispatch(storage.getIsDefined(), BindingNodes.createBinding(getContext(), frame.materialize()));
+                .executeDispatch(storage.getIsDefined(), readStorage.execute(frame));
     }
 
     protected int isDefinedArity(GlobalVariableStorage storage) {
-        return Layouts.PROC.getSharedMethodInfo(storage.getIsDefined()).getArity().getArityNumber();
+        return storage.getIsDefined().getArityNumber();
     }
 
     protected GlobalVariableStorage getStorage() {

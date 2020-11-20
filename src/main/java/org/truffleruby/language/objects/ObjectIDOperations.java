@@ -17,16 +17,11 @@ import static org.truffleruby.cext.ValueWrapperManager.TRUE_HANDLE;
 
 import java.math.BigInteger;
 
-import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
-import com.oracle.truffle.api.object.DynamicObjectLibrary;
-import org.truffleruby.Layouts;
-import org.truffleruby.RubyContext;
 import org.truffleruby.cext.ValueWrapperManager;
 import org.truffleruby.core.numeric.BignumOperations;
-import org.truffleruby.language.objects.shared.SharedObjects;
 
-import com.oracle.truffle.api.object.DynamicObject;
-import com.oracle.truffle.api.object.Property;
+import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
+import org.truffleruby.core.numeric.RubyBignum;
 
 /** <pre>
  * Object IDs distribution
@@ -73,17 +68,17 @@ public abstract class ObjectIDOperations {
     }
 
     @TruffleBoundary // BigInteger
-    public static DynamicObject largeFixnumToID(RubyContext context, long fixnum) {
+    public static RubyBignum largeFixnumToID(long fixnum) {
         assert !isSmallFixnum(fixnum);
         BigInteger big = unsignedBigInteger(fixnum);
-        return BignumOperations.createBignum(context, big.or(LARGE_FIXNUM_FLAG));
+        return BignumOperations.createBignum(big.or(LARGE_FIXNUM_FLAG));
     }
 
     @TruffleBoundary // BigInteger
-    public static DynamicObject floatToID(RubyContext context, double value) {
+    public static RubyBignum floatToID(double value) {
         long bits = Double.doubleToRawLongBits(value);
         BigInteger big = unsignedBigInteger(bits);
-        return BignumOperations.createBignum(context, big.or(FLOAT_FLAG));
+        return BignumOperations.createBignum(big.or(FLOAT_FLAG));
     }
 
     // ID => primitive
@@ -119,29 +114,4 @@ public abstract class ObjectIDOperations {
         return big;
     }
 
-    @TruffleBoundary
-    public static long verySlowGetObjectID(RubyContext context, DynamicObject object) {
-        // TODO(CS): we should specialise on reading this in the #object_id method and anywhere else it's used
-        Property property = object.getShape().getProperty(Layouts.OBJECT_ID_IDENTIFIER);
-
-        if (property != null) {
-            long value = (long) property.get(object, false);
-            if (value != 0) {
-                return value;
-            }
-        }
-
-        final long objectID = context.getObjectSpaceManager().getNextObjectID();
-
-        if (SharedObjects.isShared(context, object)) {
-            synchronized (object) {
-                // no need for a write barrier here, objectID is a long.
-                DynamicObjectLibrary.getUncached().put(object, Layouts.OBJECT_ID_IDENTIFIER, objectID);
-            }
-        } else {
-            DynamicObjectLibrary.getUncached().put(object, Layouts.OBJECT_ID_IDENTIFIER, objectID);
-        }
-
-        return objectID;
-    }
 }

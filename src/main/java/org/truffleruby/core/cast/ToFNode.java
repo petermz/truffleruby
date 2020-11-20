@@ -10,20 +10,19 @@
 
 package org.truffleruby.core.cast;
 
-import org.truffleruby.Layouts;
 import org.truffleruby.language.RubyContextNode;
+import org.truffleruby.language.RubyDynamicObject;
 import org.truffleruby.language.control.RaiseException;
-import org.truffleruby.language.dispatch.CallDispatchHeadNode;
+import org.truffleruby.language.dispatch.DispatchNode;
 
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.BranchProfile;
 
 public abstract class ToFNode extends RubyContextNode {
 
-    @Child private CallDispatchHeadNode toFNode;
+    @Child private DispatchNode toFNode;
 
     public static ToFNode create() {
         return ToFNodeGen.create();
@@ -53,7 +52,7 @@ public abstract class ToFNode extends RubyContextNode {
     }
 
     @Specialization
-    protected double coerceDynamicObject(DynamicObject object,
+    protected double coerceDynamicObject(RubyDynamicObject object,
             @Cached BranchProfile errorProfile) {
         return coerceObject(object, errorProfile);
     }
@@ -61,14 +60,14 @@ public abstract class ToFNode extends RubyContextNode {
     private double coerceObject(Object object, BranchProfile errorProfile) {
         if (toFNode == null) {
             CompilerDirectives.transferToInterpreterAndInvalidate();
-            toFNode = insert(CallDispatchHeadNode.createPrivate());
+            toFNode = insert(DispatchNode.create());
         }
 
         final Object coerced;
         try {
             coerced = toFNode.call(object, "to_f");
         } catch (RaiseException e) {
-            if (Layouts.BASIC_OBJECT.getLogicalClass(e.getException()) == coreLibrary().noMethodErrorClass) {
+            if (e.getException().getLogicalClass() == coreLibrary().noMethodErrorClass) {
                 errorProfile.enter();
                 throw new RaiseException(
                         getContext(),

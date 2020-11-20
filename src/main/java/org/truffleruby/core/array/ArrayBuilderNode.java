@@ -9,7 +9,6 @@
  */
 package org.truffleruby.core.array;
 
-import org.truffleruby.Layouts;
 import org.truffleruby.RubyContext;
 import org.truffleruby.core.array.library.ArrayStoreLibrary;
 import org.truffleruby.core.array.library.ArrayStoreLibrary.ArrayAllocator;
@@ -21,7 +20,6 @@ import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.dsl.ImportStatic;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.library.CachedLibrary;
-import com.oracle.truffle.api.object.DynamicObject;
 
 /** Builds a new Array and learns its storage strategy and its expected length. The storage strategy is generalized as
  * needed and the expected length is increased until all elements fit.
@@ -52,7 +50,7 @@ public abstract class ArrayBuilderNode extends RubyContextNode {
 
     public abstract BuilderState start(int length);
 
-    public abstract void appendArray(BuilderState state, int index, DynamicObject array);
+    public abstract void appendArray(BuilderState state, int index, RubyArray array);
 
     public abstract void appendValue(BuilderState state, int index, Object value);
 
@@ -75,7 +73,7 @@ public abstract class ArrayBuilderNode extends RubyContextNode {
         }
 
         @Override
-        public void appendArray(BuilderState state, int index, DynamicObject array) {
+        public void appendArray(BuilderState state, int index, RubyArray array) {
             getAppendArrayNode().executeAppend(state, index, array);
         }
 
@@ -93,7 +91,7 @@ public abstract class ArrayBuilderNode extends RubyContextNode {
         private AppendArrayNode getAppendArrayNode() {
             if (appendArrayNode == null) {
                 CompilerDirectives.transferToInterpreterAndInvalidate();
-                appendArrayNode = insert(AppendArrayNode.create(getContext(), startNode.allocator));
+                appendArrayNode = insert(AppendArrayNode.create(getContext()));
             }
             return appendArrayNode;
         }
@@ -101,7 +99,7 @@ public abstract class ArrayBuilderNode extends RubyContextNode {
         private AppendOneNode getAppendOneNode() {
             if (appendOneNode == null) {
                 CompilerDirectives.transferToInterpreterAndInvalidate();
-                appendOneNode = insert(AppendOneNode.create(getContext(), startNode.allocator));
+                appendOneNode = insert(AppendOneNode.create(getContext()));
             }
             return appendOneNode;
         }
@@ -131,10 +129,10 @@ public abstract class ArrayBuilderNode extends RubyContextNode {
 
             if (newStrategy != oldStrategy) {
                 if (appendArrayNode != null) {
-                    appendArrayNode.replace(AppendArrayNode.create(getContext(), updatedAllocator));
+                    appendArrayNode.replace(AppendArrayNode.create(getContext()));
                 }
                 if (appendOneNode != null) {
-                    appendOneNode.replace(AppendOneNode.create(getContext(), updatedAllocator));
+                    appendOneNode.replace(AppendOneNode.create(getContext()));
                 }
             }
 
@@ -186,16 +184,14 @@ public abstract class ArrayBuilderNode extends RubyContextNode {
     @ImportStatic(ArrayGuards.class)
     public abstract static class AppendOneNode extends ArrayBuilderBaseNode {
 
-        public static AppendOneNode create(RubyContext context, ArrayStoreLibrary.ArrayAllocator allocator) {
-            return AppendOneNodeGen.create(context, allocator);
+        public static AppendOneNode create(RubyContext context) {
+            return AppendOneNodeGen.create(context);
         }
 
         private final RubyContext context;
-        protected final ArrayStoreLibrary.ArrayAllocator allocator;
 
-        public AppendOneNode(RubyContext context, ArrayStoreLibrary.ArrayAllocator allocator) {
+        public AppendOneNode(RubyContext context) {
             this.context = context;
-            this.allocator = allocator;
         }
 
         public abstract void executeAppend(BuilderState array, int index, Object value);
@@ -251,28 +247,26 @@ public abstract class ArrayBuilderNode extends RubyContextNode {
     @ImportStatic(ArrayGuards.class)
     public abstract static class AppendArrayNode extends ArrayBuilderBaseNode {
 
-        public static AppendArrayNode create(RubyContext context, ArrayStoreLibrary.ArrayAllocator allocator) {
-            return AppendArrayNodeGen.create(context, allocator);
+        public static AppendArrayNode create(RubyContext context) {
+            return AppendArrayNodeGen.create(context);
         }
 
         private final RubyContext context;
-        protected final ArrayStoreLibrary.ArrayAllocator allocator;
 
-        public AppendArrayNode(RubyContext context, ArrayStoreLibrary.ArrayAllocator allocator) {
+        public AppendArrayNode(RubyContext context) {
             this.context = context;
-            this.allocator = allocator;
         }
 
-        public abstract void executeAppend(BuilderState state, int index, DynamicObject value);
+        public abstract void executeAppend(BuilderState state, int index, RubyArray value);
 
         @Specialization(
-                guards = { "arrays.acceptsAllValues(state.store, getStore(other))" },
+                guards = { "arrays.acceptsAllValues(state.store, other.store)" },
                 limit = "storageStrategyLimit()")
-        protected void appendCompatibleStrategy(BuilderState state, int index, DynamicObject other,
+        protected void appendCompatibleStrategy(BuilderState state, int index, RubyArray other,
                 @CachedLibrary("state.store") ArrayStoreLibrary arrays,
-                @CachedLibrary("getStore(other)") ArrayStoreLibrary others) {
+                @CachedLibrary("other.store") ArrayStoreLibrary others) {
             assert state.nextIndex == index;
-            final int otherSize = Layouts.ARRAY.getSize(other);
+            final int otherSize = other.size;
             final int neededSize = index + otherSize;
 
             int length = arrays.capacity(state.store);
@@ -284,18 +278,18 @@ public abstract class ArrayBuilderNode extends RubyContextNode {
                 state.capacity = capacity;
             }
 
-            final Object otherStore = Layouts.ARRAY.getStore(other);
+            final Object otherStore = other.store;
             others.copyContents(otherStore, 0, state.store, index, otherSize);
             state.nextIndex = state.nextIndex + otherSize;
         }
 
         @Specialization(
-                guards = { "!arrayLibrary.acceptsAllValues(state.store, getStore(other))" },
+                guards = { "!arrayLibrary.acceptsAllValues(state.store, other.store)" },
                 limit = "1")
-        protected void appendNewStrategy(BuilderState state, int index, DynamicObject other,
+        protected void appendNewStrategy(BuilderState state, int index, RubyArray other,
                 @CachedLibrary("state.store") ArrayStoreLibrary arrayLibrary) {
             assert state.nextIndex == index;
-            final int otherSize = Layouts.ARRAY.getSize(other);
+            final int otherSize = other.size;
             if (otherSize != 0) {
                 CompilerDirectives.transferToInterpreterAndInvalidate();
                 final ArrayStoreLibrary newArrayLibrary = ArrayStoreLibrary.getFactory().getUncached();
@@ -312,23 +306,19 @@ public abstract class ArrayBuilderNode extends RubyContextNode {
                 }
 
                 ArrayAllocator allocator = replaceNodes(
-                        newArrayLibrary.generalizeForStore(state.store, Layouts.ARRAY.getStore(other)),
+                        newArrayLibrary.generalizeForStore(state.store, other.store),
                         neededCapacity);
                 newStore = allocator.allocate(neededCapacity);
 
                 newArrayLibrary.copyContents(state.store, 0, newStore, 0, index);
 
-                final Object otherStore = Layouts.ARRAY.getStore(other);
+                final Object otherStore = other.store;
                 newArrayLibrary.copyContents(otherStore, 0, newStore, index, otherSize);
 
                 state.store = newStore;
                 state.capacity = neededCapacity;
                 state.nextIndex = state.nextIndex + otherSize;
             }
-        }
-
-        protected static Object getStore(DynamicObject array) {
-            return Layouts.ARRAY.getStore(array);
         }
     }
 

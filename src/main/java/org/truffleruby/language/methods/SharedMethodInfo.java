@@ -11,16 +11,17 @@ package org.truffleruby.language.methods;
 
 import java.util.Arrays;
 
-import org.truffleruby.Layouts;
 import org.truffleruby.RubyContext;
+import org.truffleruby.core.klass.RubyClass;
+import org.truffleruby.core.module.RubyModule;
 import org.truffleruby.language.LexicalScope;
+import org.truffleruby.language.RubyDynamicObject;
 import org.truffleruby.language.RubyGuards;
 import org.truffleruby.language.backtrace.BacktraceFormatter;
 import org.truffleruby.parser.ArgumentDescriptor;
 import org.truffleruby.parser.ArgumentType;
 
 import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.source.SourceSection;
 
 /** {@link InternalMethod} objects are copied as properties such as visibility are changed. {@link SharedMethodInfo}
@@ -30,7 +31,7 @@ public class SharedMethodInfo {
     private final SourceSection sourceSection;
     private final LexicalScope lexicalScope;
     private final Arity arity;
-    @CompilationFinal private DynamicObject definitionModule;
+    @CompilationFinal private RubyModule definitionModule;
     /** The original name of the method. Does not change when aliased. This is the name shown in backtraces:
      * "from FILE:LINE:in `NAME'". */
     private final String name;
@@ -38,20 +39,17 @@ public class SharedMethodInfo {
     /** Extra information. If blockDepth > 0 then it is the name of the method containing this block. */
     private final String notes;
     private final ArgumentDescriptor[] argumentDescriptors;
-    private boolean alwaysClone;
     private String descriptiveNameAndSource;
 
     public SharedMethodInfo(
             SourceSection sourceSection,
             LexicalScope lexicalScope,
             Arity arity,
-            DynamicObject definitionModule,
+            RubyModule definitionModule,
             String name,
             int blockDepth,
             String notes,
-            ArgumentDescriptor[] argumentDescriptors,
-            boolean alwaysClone) {
-
+            ArgumentDescriptor[] argumentDescriptors) {
         assert lexicalScope != null;
         this.sourceSection = sourceSection;
         this.lexicalScope = lexicalScope;
@@ -61,7 +59,6 @@ public class SharedMethodInfo {
         this.blockDepth = blockDepth;
         this.notes = notes;
         this.argumentDescriptors = argumentDescriptors;
-        this.alwaysClone = alwaysClone;
     }
 
     public SourceSection getSourceSection() {
@@ -84,14 +81,6 @@ public class SharedMethodInfo {
         return argumentDescriptors == null ? arity.toAnonymousArgumentDescriptors() : argumentDescriptors;
     }
 
-    public boolean shouldAlwaysClone() {
-        return alwaysClone;
-    }
-
-    public void setAlwaysClone(boolean alwaysClone) {
-        this.alwaysClone = alwaysClone;
-    }
-
     public SharedMethodInfo convertMethodMissingToMethod(String newName) {
         final ArgumentDescriptor[] oldArgs = getArgumentDescriptors();
         final ArgumentDescriptor[] newArgs = Arrays.copyOfRange(oldArgs, 1, oldArgs.length);
@@ -105,11 +94,10 @@ public class SharedMethodInfo {
                 newName,
                 blockDepth,
                 notes,
-                newArgs,
-                alwaysClone);
+                newArgs);
     }
 
-    public SharedMethodInfo forDefineMethod(DynamicObject newDefinitionModule, String newName) {
+    public SharedMethodInfo forDefineMethod(RubyModule newDefinitionModule, String newName) {
         return new SharedMethodInfo(
                 sourceSection,
                 lexicalScope,
@@ -118,8 +106,7 @@ public class SharedMethodInfo {
                 newName,
                 0, // no longer a block
                 null,
-                argumentDescriptors,
-                alwaysClone);
+                argumentDescriptors);
     }
 
     /** Returns the method name on its own. */
@@ -139,13 +126,13 @@ public class SharedMethodInfo {
         }
     }
 
-    private String moduleAndMethodName(DynamicObject module, String methodName) {
+    private static String moduleAndMethodName(RubyModule module, String methodName) {
         if (module != null && methodName != null) {
             if (RubyGuards.isMetaClass(module)) {
-                final DynamicObject attached = Layouts.CLASS.getAttached(module);
-                return Layouts.MODULE.getFields(attached).getName() + "." + methodName;
+                final RubyDynamicObject attached = ((RubyClass) module).attached;
+                return ((RubyModule) attached).fields.getName() + "." + methodName;
             } else {
-                return Layouts.MODULE.getFields(module).getName() + "#" + methodName;
+                return module.fields.getName() + "#" + methodName;
             }
         } else if (methodName != null) {
             return methodName;
@@ -194,11 +181,11 @@ public class SharedMethodInfo {
         return getDescriptiveNameAndSource();
     }
 
-    public DynamicObject getDefinitionModule() {
+    public RubyModule getDefinitionModule() {
         return definitionModule;
     }
 
-    public void setDefinitionModuleIfUnset(DynamicObject definitionModule) {
+    public void setDefinitionModuleIfUnset(RubyModule definitionModule) {
         if (this.definitionModule == null) {
             this.definitionModule = definitionModule;
         }

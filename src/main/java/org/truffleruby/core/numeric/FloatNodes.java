@@ -9,11 +9,19 @@
  */
 package org.truffleruby.core.numeric;
 
-import java.util.Locale;
-
+import com.oracle.truffle.api.CompilerDirectives;
+import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
+import com.oracle.truffle.api.dsl.Cached;
+import com.oracle.truffle.api.dsl.CachedLanguage;
+import com.oracle.truffle.api.dsl.ImportStatic;
+import com.oracle.truffle.api.dsl.Specialization;
+import com.oracle.truffle.api.frame.VirtualFrame;
+import com.oracle.truffle.api.nodes.ExplodeLoop;
+import com.oracle.truffle.api.profiles.BranchProfile;
+import com.oracle.truffle.api.profiles.ConditionProfile;
 import org.jcodings.specific.USASCIIEncoding;
 import org.jcodings.specific.UTF8Encoding;
-import org.truffleruby.Layouts;
+import org.truffleruby.RubyLanguage;
 import org.truffleruby.SuppressFBWarnings;
 import org.truffleruby.builtins.CoreMethod;
 import org.truffleruby.builtins.CoreMethodArrayArgumentsNode;
@@ -21,25 +29,20 @@ import org.truffleruby.builtins.CoreModule;
 import org.truffleruby.builtins.NonStandard;
 import org.truffleruby.builtins.Primitive;
 import org.truffleruby.builtins.PrimitiveArrayArgumentsNode;
+import org.truffleruby.core.array.RubyArray;
 import org.truffleruby.core.numeric.FloatNodesFactory.ModNodeFactory;
 import org.truffleruby.core.rope.CodeRange;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.core.string.StringNodes;
 import org.truffleruby.core.string.StringUtils;
-import org.truffleruby.core.symbol.CoreSymbols;
+import org.truffleruby.language.Nil;
+import org.truffleruby.language.RubyDynamicObject;
 import org.truffleruby.language.Visibility;
 import org.truffleruby.language.control.RaiseException;
-import org.truffleruby.language.dispatch.CallDispatchHeadNode;
+import org.truffleruby.language.dispatch.DispatchNode;
 
-import com.oracle.truffle.api.CompilerDirectives;
-import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
-import com.oracle.truffle.api.dsl.Cached;
-import com.oracle.truffle.api.dsl.ImportStatic;
-import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.frame.VirtualFrame;
-import com.oracle.truffle.api.nodes.ExplodeLoop;
-import com.oracle.truffle.api.object.DynamicObject;
-import com.oracle.truffle.api.profiles.BranchProfile;
-import com.oracle.truffle.api.profiles.ConditionProfile;
+import java.util.Locale;
+
 
 @CoreModule(value = "Float", isClass = true)
 public abstract class FloatNodes {
@@ -67,15 +70,16 @@ public abstract class FloatNodes {
             return a + b;
         }
 
-        @Specialization(guards = "isRubyBignum(b)")
-        protected double add(double a, DynamicObject b) {
+        @Specialization
+        protected double add(double a, RubyBignum b) {
             return a + BigIntegerOps.doubleValue(b);
         }
 
         @Specialization(guards = "!isRubyNumber(b)")
         protected Object addCoerced(double a, Object b,
-                @Cached("createPrivate()") CallDispatchHeadNode redoCoerced) {
-            return redoCoerced.call(a, "redo_coerced", CoreSymbols.PLUS, b);
+                @Cached DispatchNode redoCoerced,
+                @CachedLanguage RubyLanguage language) {
+            return redoCoerced.call(a, "redo_coerced", language.coreSymbols.PLUS, b);
         }
     }
 
@@ -92,15 +96,16 @@ public abstract class FloatNodes {
             return a - b;
         }
 
-        @Specialization(guards = "isRubyBignum(b)")
-        protected double sub(double a, DynamicObject b) {
+        @Specialization
+        protected double sub(double a, RubyBignum b) {
             return a - BigIntegerOps.doubleValue(b);
         }
 
         @Specialization(guards = "!isRubyNumber(b)")
         protected Object subCoerced(double a, Object b,
-                @Cached("createPrivate()") CallDispatchHeadNode redoCoerced) {
-            return redoCoerced.call(a, "redo_coerced", CoreSymbols.MINUS, b);
+                @Cached DispatchNode redoCoerced,
+                @CachedLanguage RubyLanguage language) {
+            return redoCoerced.call(a, "redo_coerced", language.coreSymbols.MINUS, b);
         }
 
     }
@@ -118,15 +123,16 @@ public abstract class FloatNodes {
             return a * b;
         }
 
-        @Specialization(guards = "isRubyBignum(b)")
-        protected double mul(double a, DynamicObject b) {
+        @Specialization
+        protected double mul(double a, RubyBignum b) {
             return a * BigIntegerOps.doubleValue(b);
         }
 
         @Specialization(guards = "!isRubyNumber(b)")
         protected Object mulCoerced(double a, Object b,
-                @Cached("createPrivate()") CallDispatchHeadNode redoCoerced) {
-            return redoCoerced.call(a, "redo_coerced", CoreSymbols.MULTIPLY, b);
+                @Cached DispatchNode redoCoerced,
+                @CachedLanguage RubyLanguage language) {
+            return redoCoerced.call(a, "redo_coerced", language.coreSymbols.MULTIPLY, b);
         }
 
     }
@@ -134,8 +140,8 @@ public abstract class FloatNodes {
     @CoreMethod(names = "**", required = 1)
     public abstract static class PowNode extends CoreMethodArrayArgumentsNode {
 
-        @Child private CallDispatchHeadNode complexConvertNode;
-        @Child private CallDispatchHeadNode complexPowNode;
+        @Child private DispatchNode complexConvertNode;
+        @Child private DispatchNode complexPowNode;
 
         private final ConditionProfile complexProfile = ConditionProfile.create();
 
@@ -162,8 +168,8 @@ public abstract class FloatNodes {
             if (complexProfile.profile(base < 0 && exponent != Math.round(exponent))) {
                 if (complexConvertNode == null) {
                     CompilerDirectives.transferToInterpreterAndInvalidate();
-                    complexConvertNode = insert(CallDispatchHeadNode.createPrivate());
-                    complexPowNode = insert(CallDispatchHeadNode.createPrivate());
+                    complexConvertNode = insert(DispatchNode.create());
+                    complexPowNode = insert(DispatchNode.create());
                 }
 
                 final Object aComplex = complexConvertNode.call(coreLibrary().complexClass, "convert", base, 0);
@@ -174,15 +180,16 @@ public abstract class FloatNodes {
             }
         }
 
-        @Specialization(guards = "isRubyBignum(exponent)")
-        protected double pow(double base, DynamicObject exponent) {
+        @Specialization
+        protected double pow(double base, RubyBignum exponent) {
             return Math.pow(base, BigIntegerOps.doubleValue(exponent));
         }
 
         @Specialization(guards = "!isRubyNumber(exponent)")
         protected Object powCoerced(double base, Object exponent,
-                @Cached("createPrivate()") CallDispatchHeadNode redoCoerced) {
-            return redoCoerced.call(base, "redo_coerced", CoreSymbols.POW, exponent);
+                @Cached DispatchNode redoCoerced,
+                @CachedLanguage RubyLanguage language) {
+            return redoCoerced.call(base, "redo_coerced", language.coreSymbols.POW, exponent);
         }
 
     }
@@ -200,15 +207,16 @@ public abstract class FloatNodes {
             return a / b;
         }
 
-        @Specialization(guards = "isRubyBignum(b)")
-        protected double div(double a, DynamicObject b) {
+        @Specialization
+        protected double div(double a, RubyBignum b) {
             return a / BigIntegerOps.doubleValue(b);
         }
 
         @Specialization(guards = "!isRubyNumber(b)")
         protected Object divCoerced(double a, Object b,
-                @Cached("createPrivate()") CallDispatchHeadNode redoCoerced) {
-            return redoCoerced.call(a, "redo_coerced", CoreSymbols.DIVIDE, b);
+                @Cached DispatchNode redoCoerced,
+                @CachedLanguage RubyLanguage language) {
+            return redoCoerced.call(a, "redo_coerced", language.coreSymbols.DIVIDE, b);
         }
 
     }
@@ -246,15 +254,16 @@ public abstract class FloatNodes {
             return result;
         }
 
-        @Specialization(guards = "isRubyBignum(b)")
-        protected double mod(double a, DynamicObject b) {
+        @Specialization
+        protected double mod(double a, RubyBignum b) {
             return mod(a, BigIntegerOps.doubleValue(b));
         }
 
         @Specialization(guards = "!isRubyNumber(b)")
         protected Object modCoerced(double a, Object b,
-                @Cached("createPrivate()") CallDispatchHeadNode redoCoerced) {
-            return redoCoerced.call(a, "redo_coerced", CoreSymbols.MODULO, b);
+                @Cached DispatchNode redoCoerced,
+                @CachedLanguage RubyLanguage language) {
+            return redoCoerced.call(a, "redo_coerced", language.coreSymbols.MODULO, b);
         }
 
     }
@@ -265,24 +274,25 @@ public abstract class FloatNodes {
         @Child private GeneralDivModNode divModNode = new GeneralDivModNode();
 
         @Specialization
-        protected DynamicObject divMod(double a, long b) {
+        protected RubyArray divMod(double a, long b) {
             return divModNode.execute(a, b);
         }
 
         @Specialization
-        protected DynamicObject divMod(double a, double b) {
+        protected RubyArray divMod(double a, double b) {
             return divModNode.execute(a, b);
         }
 
-        @Specialization(guards = "isRubyBignum(b)")
-        protected DynamicObject divMod(double a, DynamicObject b) {
-            return divModNode.execute(a, Layouts.BIGNUM.getValue(b));
+        @Specialization
+        protected RubyArray divMod(double a, RubyBignum b) {
+            return divModNode.execute(a, b.value);
         }
 
         @Specialization(guards = "!isRubyBignum(b)")
-        protected Object divModCoerced(double a, DynamicObject b,
-                @Cached("createPrivate()") CallDispatchHeadNode redoCoerced) {
-            return redoCoerced.call(a, "redo_coerced", CoreSymbols.DIVMOD, b);
+        protected Object divModCoerced(double a, RubyDynamicObject b,
+                @Cached DispatchNode redoCoerced,
+                @CachedLanguage RubyLanguage language) {
+            return redoCoerced.call(a, "redo_coerced", language.coreSymbols.DIVMOD, b);
         }
 
     }
@@ -300,15 +310,16 @@ public abstract class FloatNodes {
             return a < b;
         }
 
-        @Specialization(guards = "isRubyBignum(b)")
-        protected boolean lessBignum(double a, DynamicObject b) {
+        @Specialization
+        protected boolean lessBignum(double a, RubyBignum b) {
             return BigIntegerOps.compare(a, b) < 0;
         }
 
         @Specialization(guards = "!isRubyNumber(b)")
         protected Object lessCoerced(double a, Object b,
-                @Cached("createPrivate()") CallDispatchHeadNode redoCompare) {
-            return redoCompare.call(a, "redo_compare", CoreSymbols.LESS_THAN, b);
+                @Cached DispatchNode redoCompare,
+                @CachedLanguage RubyLanguage language) {
+            return redoCompare.call(a, "redo_compare", language.coreSymbols.LESS_THAN, b);
         }
     }
 
@@ -325,15 +336,16 @@ public abstract class FloatNodes {
             return a <= b;
         }
 
-        @Specialization(guards = "isRubyBignum(b)")
-        protected boolean lessEqual(double a, DynamicObject b) {
+        @Specialization
+        protected boolean lessEqual(double a, RubyBignum b) {
             return BigIntegerOps.compare(a, b) <= 0;
         }
 
         @Specialization(guards = "!isRubyNumber(b)")
         protected Object lessEqualCoerced(double a, Object b,
-                @Cached("createPrivate()") CallDispatchHeadNode redoCompare) {
-            return redoCompare.call(a, "redo_compare", CoreSymbols.LEQ, b);
+                @Cached DispatchNode redoCompare,
+                @CachedLanguage RubyLanguage language) {
+            return redoCompare.call(a, "redo_compare", language.coreSymbols.LEQ, b);
         }
     }
 
@@ -354,7 +366,7 @@ public abstract class FloatNodes {
     @CoreMethod(names = { "==", "===" }, required = 1)
     public abstract static class EqualNode extends CoreMethodArrayArgumentsNode {
 
-        @Child private CallDispatchHeadNode fallbackCallNode;
+        @Child private DispatchNode fallbackCallNode;
 
         @Specialization
         protected boolean equal(double a, long b) {
@@ -366,8 +378,8 @@ public abstract class FloatNodes {
             return a == b;
         }
 
-        @Specialization(guards = "isRubyBignum(b)")
-        protected boolean equal(double a, DynamicObject b) {
+        @Specialization
+        protected boolean equal(double a, RubyBignum b) {
             return BigIntegerOps.compare(a, b) == 0;
         }
 
@@ -375,7 +387,7 @@ public abstract class FloatNodes {
         protected Object equal(VirtualFrame frame, double a, Object b) {
             if (fallbackCallNode == null) {
                 CompilerDirectives.transferToInterpreterAndInvalidate();
-                fallbackCallNode = insert(CallDispatchHeadNode.createPrivate());
+                fallbackCallNode = insert(DispatchNode.create());
             }
 
             return fallbackCallNode.call(a, "equal_fallback", b);
@@ -400,13 +412,13 @@ public abstract class FloatNodes {
             return Double.compare(a, b);
         }
 
-        @Specialization(guards = { "isInfinity(a)", "isRubyBignum(b)" })
-        protected int compareInfinity(double a, DynamicObject b) {
+        @Specialization(guards = { "isInfinity(a)" })
+        protected int compareInfinity(double a, RubyBignum b) {
             return a < 0 ? -1 : +1;
         }
 
-        @Specialization(guards = { "!isNaN(a)", "!isInfinity(a)", "isRubyBignum(b)" })
-        protected int compareBignum(double a, DynamicObject b) {
+        @Specialization(guards = { "!isNaN(a)", "!isInfinity(a)" })
+        protected int compareBignum(double a, RubyBignum b) {
             return BigIntegerOps.compare(a, b);
         }
 
@@ -416,14 +428,14 @@ public abstract class FloatNodes {
         }
 
         @Specialization(guards = { "!isNaN(a)", "!isRubyBignum(b)" })
-        protected Object compare(double a, DynamicObject b,
-                @Cached("createPrivate()") CallDispatchHeadNode redoCompare) {
+        protected Object compare(double a, RubyDynamicObject b,
+                @Cached DispatchNode redoCompare) {
             return redoCompare.call(a, "redo_compare_bad_coerce_return_error", b);
         }
 
-        @Specialization(guards = { "!isNaN(a)", "isNil(b)" })
-        protected Object compare(double a, Object b,
-                @Cached("createPrivate()") CallDispatchHeadNode redoCompare) {
+        @Specialization(guards = { "!isNaN(a)" })
+        protected Object compare(double a, Nil b,
+                @Cached DispatchNode redoCompare) {
             return redoCompare.call(a, "redo_compare_bad_coerce_return_error", b);
         }
 
@@ -442,15 +454,16 @@ public abstract class FloatNodes {
             return a >= b;
         }
 
-        @Specialization(guards = "isRubyBignum(b)")
-        protected boolean greaterEqual(double a, DynamicObject b) {
+        @Specialization
+        protected boolean greaterEqual(double a, RubyBignum b) {
             return BigIntegerOps.compare(a, b) >= 0;
         }
 
         @Specialization(guards = "!isRubyNumber(b)")
         protected Object greaterEqualCoerced(double a, Object b,
-                @Cached("createPrivate()") CallDispatchHeadNode redoCompare) {
-            return redoCompare.call(a, "redo_compare", CoreSymbols.GEQ, b);
+                @Cached DispatchNode redoCompare,
+                @CachedLanguage RubyLanguage language) {
+            return redoCompare.call(a, "redo_compare", language.coreSymbols.GEQ, b);
         }
 
     }
@@ -468,15 +481,16 @@ public abstract class FloatNodes {
             return a > b;
         }
 
-        @Specialization(guards = "isRubyBignum(b)")
-        protected boolean greater(double a, DynamicObject b) {
+        @Specialization
+        protected boolean greater(double a, RubyBignum b) {
             return BigIntegerOps.compare(a, b) > 0;
         }
 
         @Specialization(guards = "!isRubyNumber(b)")
         protected Object greaterCoerced(double a, Object b,
-                @Cached("createPrivate()") CallDispatchHeadNode redoCompare) {
-            return redoCompare.call(a, "redo_compare", CoreSymbols.GREATER_THAN, b);
+                @Cached DispatchNode redoCompare,
+                @CachedLanguage RubyLanguage language) {
+            return redoCompare.call(a, "redo_compare", language.coreSymbols.GREATER_THAN, b);
         }
     }
 
@@ -829,7 +843,7 @@ public abstract class FloatNodes {
 
         @TruffleBoundary
         @Specialization
-        protected DynamicObject toS(double value) {
+        protected RubyString toS(double value) {
             /* Ruby has complex custom formatting logic for floats. Our logic meets the specs but we suspect it's
              * possibly still not entirely correct. JRuby seems to be correct, but their logic is tied up in their
              * printf implementation. Also see our FormatFloatNode, which I suspect is also deficient or
@@ -891,7 +905,7 @@ public abstract class FloatNodes {
 
         @TruffleBoundary
         @Specialization
-        protected DynamicObject dToA(double value) {
+        protected RubyArray dToA(double value) {
             // Large enough to print all digits of Float::MIN.
             String string = StringUtils.format(Locale.ENGLISH, "%.1022f", value);
 

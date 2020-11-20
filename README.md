@@ -4,7 +4,7 @@ TruffleRuby is the [GraalVM](http://graalvm.org/) high-performance implementatio
 of the [Ruby programming language](https://www.ruby-lang.org/en/) built by
 [Oracle Labs](https://labs.oracle.com).
 
-## Getting started
+## Getting Started
 
 There are three ways to install TruffleRuby releases and nightly builds:
 
@@ -17,7 +17,7 @@ There are three ways to install TruffleRuby releases and nightly builds:
 
 * Via your [Ruby manager/installer](doc/user/ruby-managers.md) (RVM, rbenv,
   chruby, ruby-build, ruby-install). This contains only TruffleRuby, in the
-  [*native* configuration](#truffleruby-configurations), making it a smaller
+  [*native* configuration](#truffleruby-runtime-configurations), making it a smaller
   download. It is meant for users just wanting a Ruby implementation and already
   using a Ruby manager.
 
@@ -58,11 +58,15 @@ Please report any issue you might find on [GitHub](https://github.com/oracle/tru
 TruffleRuby aims to:
 
 * Run idiomatic Ruby code faster
+  * TruffleRuby is the fastest Ruby implementation for many CPU-intensive benchmarks.
 * Run Ruby code in parallel
-* Boot Ruby applications in less time
-* Execute C extensions in a managed environment
+  * TruffleRuby does not have a global interpreter lock and runs Ruby code in parallel.
+* Support C extensions
+  * Many C extensions work out of the box, including database drivers.
 * Add fast and low-overhead interoperability with languages like Java, JavaScript, Python and R
+  * Provided by GraalVM, see the [Polyglot documentation](doc/user/polyglot.md).
 * Provide new tooling such as debuggers and monitoring that work across languages
+  * Includes a profiler, debugger, VisualVM, and more, see the [Tools documentation](doc/user/tools.md).
 * All while maintaining very high compatibility with the standard implementation of Ruby
 
 ## TruffleRuby Runtime Configurations
@@ -80,7 +84,7 @@ To find out which runtime configuration is used, run `ruby --version` on the com
 or check the value of `RUBY_DESCRIPTION` or `TruffleRuby.native?` in Ruby code.
 Runtime configurations are further detailed in [Deploying TruffleRuby](doc/user/deploying.md).
 
-## System compatibility
+## System Compatibility
 
 TruffleRuby is actively tested on these systems:
 
@@ -90,6 +94,11 @@ TruffleRuby is actively tested on these systems:
 * Fedora 28
 * macOS 10.14 (Mojave)
 * macOS 10.15 (Catalina)
+
+Architectures:
+
+* AMD64 (aka `x86_64`): Supported
+* AArch64 (aka `arm64`): Experimental, C extensions do not work yet on AArch64
 
 You may find that TruffleRuby will not work if you severely restrict the
 environment, for example by unmounting system filesystems such as `/dev/shm`.
@@ -106,19 +115,23 @@ but this can only be done on a best effort basis.
 
 You may also need to set up a [UTF-8 locale](doc/user/utf8-locale.md).
 
-See the [contributor workflow] document if you wish to build TruffleRuby from source.
+See the [contributor workflow](doc/contributor/workflow.md) document if you wish to build TruffleRuby from source.
 
-[contributor workflow]: doc/contributor/workflow.md
-
-## Current status
+## Current Status
 
 We recommend that people trying TruffleRuby on their gems and applications
 [get in touch with us](#contact) for help.
 
-TruffleRuby is progressing fast but is currently probably not ready for you to
-try running your full Rails application on. However it is ready for
-experimentation and curious end-users to try on their gems and smaller
-applications, and to send us reports of issues they find.
+TruffleRuby can run Rails and is compatible with many gems, including C extensions.
+TruffleRuby is not 100% compatible with MRI 2.6 yet though, please report any compatibility issue you might find.
+TruffleRuby [passes around 97% of ruby/spec](https://eregon.me/blog/2020/06/27/ruby-spec-compatibility-report.html),
+more than any other alternative Ruby implementation.
+
+TruffleRuby might not be fast yet on Rails applications and large programs.
+Notably, large programs currently take a long time to warmup on TruffleRuby and
+this is something the TruffleRuby team is currently working on.
+Large programs often involve more performance-critical code and
+so there is a higher chance to hit an area of TruffleRuby which has not been optimized yet.
 
 ## Releases
 
@@ -159,7 +172,7 @@ guide](https://www.oracle.com/corporate/security-practices/assurance/vulnerabili
 rather than by something public such as a GitHub issue or a Gitter
 conversation.
 
-## Mailing list
+## Mailing List
 
 Announcements about GraalVM, including TruffleRuby, are made on the
 [graal-dev](http://mail.openjdk.java.net/mailman/listinfo/graal-dev) mailing list.

@@ -11,19 +11,21 @@ package org.truffleruby.stdlib;
 
 import java.util.Set;
 
-import org.truffleruby.Layouts;
 import org.truffleruby.builtins.CoreMethod;
 import org.truffleruby.builtins.CoreMethodArrayArgumentsNode;
 import org.truffleruby.builtins.CoreModule;
+import org.truffleruby.core.array.RubyArray;
+import org.truffleruby.core.hash.RubyHash;
 import org.truffleruby.core.regexp.MatchDataNodes.ValuesNode;
-import org.truffleruby.core.string.StringOperations;
+import org.truffleruby.core.regexp.RubyMatchData;
+import org.truffleruby.core.string.RubyString;
+import org.truffleruby.language.RubyDynamicObject;
 import org.truffleruby.language.objects.ObjectGraph;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Fallback;
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.object.DynamicObject;
 
 @CoreModule("Truffle::ObjSpace")
 public abstract class ObjSpaceNodes {
@@ -31,23 +33,23 @@ public abstract class ObjSpaceNodes {
     @CoreMethod(names = "memsize_of", onSingleton = true, required = 1)
     public abstract static class MemsizeOfNode extends CoreMethodArrayArgumentsNode {
 
-        @Specialization(guards = "isRubyArray(object)")
-        protected int memsizeOfArray(DynamicObject object) {
-            return memsizeOfObject(object) + Layouts.ARRAY.getSize(object);
+        @Specialization
+        protected int memsizeOfArray(RubyArray object) {
+            return memsizeOfObject(object) + object.size;
         }
 
-        @Specialization(guards = "isRubyHash(object)")
-        protected int memsizeOfHash(DynamicObject object) {
-            return memsizeOfObject(object) + Layouts.HASH.getSize(object);
+        @Specialization
+        protected int memsizeOfHash(RubyHash object) {
+            return memsizeOfObject(object) + object.size;
         }
 
-        @Specialization(guards = "isRubyString(object)")
-        protected int memsizeOfString(DynamicObject object) {
-            return memsizeOfObject(object) + StringOperations.rope(object).byteLength();
+        @Specialization
+        protected int memsizeOfString(RubyString object) {
+            return memsizeOfObject(object) + object.rope.byteLength();
         }
 
-        @Specialization(guards = "isRubyMatchData(object)")
-        protected int memsizeOfMatchData(DynamicObject object,
+        @Specialization
+        protected int memsizeOfMatchData(RubyMatchData object,
                 @Cached ValuesNode matchDataValues) {
             return memsizeOfObject(object) + matchDataValues.execute(object).length;
         }
@@ -58,11 +60,11 @@ public abstract class ObjSpaceNodes {
                         "!isRubyHash(object)",
                         "!isRubyString(object)",
                         "!isRubyMatchData(object)" })
-        protected int memsizeOfObject(DynamicObject object) {
+        protected int memsizeOfObject(RubyDynamicObject object) {
             return 1 + object.getShape().getPropertyListInternal(false).size();
         }
 
-        @Specialization(guards = "!isDynamicObject(object)")
+        @Specialization(guards = "!isRubyDynamicObject(object)")
         protected int memsize(Object object) {
             return 0;
         }
@@ -73,7 +75,7 @@ public abstract class ObjSpaceNodes {
 
         @TruffleBoundary
         @Specialization
-        protected DynamicObject adjacentObjects(DynamicObject object) {
+        protected RubyArray adjacentObjects(RubyDynamicObject object) {
             final Set<Object> objects = ObjectGraph.getAdjacentObjects(object);
             return createArray(objects.toArray());
         }
@@ -90,8 +92,9 @@ public abstract class ObjSpaceNodes {
 
         @TruffleBoundary
         @Specialization
-        protected DynamicObject rootObjects() {
-            final Set<Object> objects = ObjectGraph.stopAndGetRootObjects(this, getContext());
+        protected RubyArray rootObjects() {
+            final Set<Object> objects = ObjectGraph
+                    .stopAndGetRootObjects("ObjectSpace.reachable_objects_from_root", getContext(), this);
             return createArray(objects.toArray());
         }
 
@@ -103,7 +106,7 @@ public abstract class ObjSpaceNodes {
         @TruffleBoundary
         @Specialization
         protected Object traceAllocationsStart() {
-            getContext().getObjectSpaceManager().traceAllocationsStart(getContext().getLanguage());
+            getContext().getObjectSpaceManager().traceAllocationsStart(getContext().getLanguageSlow());
             return nil;
         }
 
@@ -115,7 +118,7 @@ public abstract class ObjSpaceNodes {
         @TruffleBoundary
         @Specialization
         protected Object traceAllocationsStop() {
-            getContext().getObjectSpaceManager().traceAllocationsStop(getContext().getLanguage());
+            getContext().getObjectSpaceManager().traceAllocationsStop(getContext().getLanguageSlow());
             return nil;
         }
 

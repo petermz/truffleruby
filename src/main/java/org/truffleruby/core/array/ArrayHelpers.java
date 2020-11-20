@@ -9,59 +9,50 @@
  */
 package org.truffleruby.core.array;
 
-import org.truffleruby.Layouts;
 import org.truffleruby.RubyContext;
+import org.truffleruby.RubyLanguage;
 import org.truffleruby.core.array.library.ArrayStoreLibrary;
-
-import com.oracle.truffle.api.object.DynamicObject;
 
 public abstract class ArrayHelpers {
 
-    public static Object getStore(DynamicObject array) {
-        return Layouts.ARRAY.getStore(array);
-    }
-
-    public static int getSize(DynamicObject array) {
-        return Layouts.ARRAY.getSize(array);
-    }
-
-    public static void setStoreAndSize(DynamicObject array, Object store, int size) {
-        Layouts.ARRAY.setStore(array, store);
+    public static void setStoreAndSize(RubyArray array, Object store, int size) {
+        array.store = store;
         setSize(array, size);
     }
 
     /** Sets the size of the given array
      *
      * Asserts that the size is valid for the current store of the array. If setting both size and store, use
-     * setStoreAndSize or be sure to setStore before setSize as this assertion may fail.
-     * 
-     * @param array
-     * @param size */
-    public static void setSize(DynamicObject array, int size) {
+     * setStoreAndSize or be sure to setStore before setSize as this assertion may fail. */
+    public static void setSize(RubyArray array, int size) {
         assert ArrayOperations.getStoreCapacity(array) >= size;
-        Layouts.ARRAY.setSize(array, size);
+        array.size = size;
     }
 
-    public static DynamicObject createArray(RubyContext context, Object store, int size) {
+    public static RubyArray createArray(RubyContext context, Object store, int size) {
         assert !(store instanceof Object[]) || store.getClass() == Object[].class;
-        return Layouts.ARRAY.createArray(context.getCoreLibrary().arrayFactory, store, size);
+        return new RubyArray(context.getCoreLibrary().arrayClass, RubyLanguage.arrayShape, store, size);
     }
 
-    public static DynamicObject createArray(RubyContext context, int[] store) {
+    public static RubyArray createArray(RubyContext context, int[] store) {
         return createArray(context, store, store.length);
     }
 
-    public static DynamicObject createArray(RubyContext context, long[] store) {
+    public static RubyArray createArray(RubyContext context, long[] store) {
         return createArray(context, store, store.length);
     }
 
-    public static DynamicObject createArray(RubyContext context, Object[] store) {
+    public static RubyArray createArray(RubyContext context, Object[] store) {
         assert store.getClass() == Object[].class;
         return createArray(context, store, store.length);
     }
 
-    public static DynamicObject createEmptyArray(RubyContext context) {
-        return Layouts.ARRAY.createArray(context.getCoreLibrary().arrayFactory, ArrayStoreLibrary.INITIAL_STORE, 0);
+    public static RubyArray createEmptyArray(RubyContext context) {
+        return new RubyArray(
+                context.getCoreLibrary().arrayClass,
+                RubyLanguage.arrayShape,
+                ArrayStoreLibrary.INITIAL_STORE,
+                0);
     }
 
     /** Returns a Java array of the narrowest possible type holding {@code object}. */
@@ -81,12 +72,12 @@ public abstract class ArrayHelpers {
     }
 
     /** Returns a Ruby array backed by a store of the narrowest possible type, holding {@code object}. */
-    public static DynamicObject specializedRubyArrayOf(RubyContext context, ArrayBuilderNode builder, Object object) {
+    public static RubyArray specializedRubyArrayOf(RubyContext context, ArrayBuilderNode builder, Object object) {
         return createArray(context, specializedJavaArrayOf(builder, object), 1);
     }
 
     /** Returns a Ruby array backed by a store of the narrowest possible type, holding the {@code objects}. */
-    public static DynamicObject specializedRubyArrayOf(RubyContext context, ArrayBuilderNode builder,
+    public static RubyArray specializedRubyArrayOf(RubyContext context, ArrayBuilderNode builder,
             Object... objects) {
         return createArray(context, specializedJavaArrayOf(builder, objects), objects.length);
     }

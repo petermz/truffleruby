@@ -13,14 +13,16 @@ package org.truffleruby.language.arguments;
 
 import org.truffleruby.RubyContext;
 import org.truffleruby.core.array.ArrayHelpers;
+import org.truffleruby.core.array.RubyArray;
 import org.truffleruby.parser.ArgumentDescriptor;
 import org.truffleruby.parser.ArgumentType;
 
-import com.oracle.truffle.api.object.DynamicObject;
+import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 
 public class ArgumentDescriptorUtils {
 
-    public static DynamicObject argumentDescriptorsToParameters(RubyContext context,
+    @TruffleBoundary
+    public static RubyArray argumentDescriptorsToParameters(RubyContext context,
             ArgumentDescriptor[] argsDesc,
             boolean isLambda) {
         final Object[] params = new Object[argsDesc.length];
@@ -32,9 +34,7 @@ public class ArgumentDescriptorUtils {
         return ArrayHelpers.createArray(context, params);
     }
 
-    public static DynamicObject toArray(RubyContext context,
-            ArgumentDescriptor argDesc,
-            boolean isLambda) {
+    public static RubyArray toArray(RubyContext context, ArgumentDescriptor argDesc, boolean isLambda) {
         if ((argDesc.type == ArgumentType.req) && !isLambda) {
             return toArray(context, ArgumentType.opt, argDesc.name);
         }
@@ -42,20 +42,13 @@ public class ArgumentDescriptorUtils {
         return toArray(context, argDesc.type, argDesc.name);
     }
 
-    public static DynamicObject toArray(RubyContext context,
-            ArgumentType argType,
-            String name) {
+    public static RubyArray toArray(RubyContext context, ArgumentType argType, String name) {
         final Object[] store;
 
         if (argType.anonymous || name == null) {
-            store = new Object[]{
-                    context.getSymbol(argType.symbolicName)
-            };
+            store = new Object[]{ context.getSymbol(argType.symbolicName) };
         } else {
-            store = new Object[]{
-                    context.getSymbol(argType.symbolicName),
-                    context.getSymbol(name)
-            };
+            store = new Object[]{ context.getSymbol(argType.symbolicName), context.getSymbol(name) };
         }
 
         return ArrayHelpers.createArray(context, store);

@@ -19,21 +19,20 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.locks.ReentrantLock;
 
-import org.truffleruby.Layouts;
 import org.truffleruby.RubyContext;
 import org.truffleruby.RubyLanguage;
 import org.truffleruby.core.InterruptMode;
 import org.truffleruby.core.fiber.FiberManager;
+import org.truffleruby.core.thread.RubyThread;
 import org.truffleruby.core.thread.ThreadManager;
 import org.truffleruby.platform.Signals;
 
 import com.oracle.truffle.api.Assumption;
+import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.CompilationFinal;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.Truffle;
-import com.oracle.truffle.api.nodes.InvalidAssumptionException;
 import com.oracle.truffle.api.nodes.Node;
-import com.oracle.truffle.api.object.DynamicObject;
 
 public class SafepointManager {
 
@@ -43,15 +42,19 @@ public class SafepointManager {
 
     private final ReentrantLock lock = new ReentrantLock();
 
-    private final Phaser phaser = new Phaser() {
-        @Override
-        protected boolean onAdvance(int phase, int registeredParties) {
-            // This Phaser should not be automatically terminated,
-            // even when registeredParties drops to 0.
-            // This notably happens when pre-initializing the context.
-            return false;
-        }
-    };
+    private final Phaser phaser = createPhaser();
+
+    private static Phaser createPhaser() {
+        return new Phaser() {
+            @Override
+            protected boolean onAdvance(int phase, int registeredParties) {
+                // This Phaser should not be automatically terminated,
+                // even when registeredParties drops to 0.
+                // This notably happens when pre-initializing the context.
+                return false;
+            }
+        };
+    }
 
     @CompilationFinal private Assumption assumption = Truffle.getRuntime().createAssumption("SafepointManager");
 
@@ -97,17 +100,20 @@ public class SafepointManager {
     }
 
     private void poll(Node currentNode, boolean fromBlockingCall) {
-        try {
-            assumption.check();
-        } catch (InvalidAssumptionException e) {
+        if (!assumption.isValid()) {
+            CompilerDirectives.transferToInterpreterAndInvalidate();
             assumptionInvalidated(currentNode, fromBlockingCall);
         }
     }
 
     @TruffleBoundary
     private void assumptionInvalidated(Node currentNode, boolean fromBlockingCall) {
-        final DynamicObject thread = context.getThreadManager().getCurrentThread();
-        final InterruptMode interruptMode = Layouts.THREAD.getInterruptMode(thread);
+        if (lock.isHeldByCurrentThread()) {
+            throw CompilerDirectives.shouldNotReachHere("poll() should not be called by the driving thread");
+        }
+
+        final RubyThread thread = context.getThreadManager().getCurrentThread();
+        final InterruptMode interruptMode = thread.interruptMode;
 
         final boolean interruptible = (interruptMode == InterruptMode.IMMEDIATE) ||
                 (fromBlockingCall && interruptMode == InterruptMode.ON_BLOCKING);
@@ -127,7 +133,9 @@ public class SafepointManager {
 
     @TruffleBoundary
     private SafepointAction step(Node currentNode, boolean isDrivingThread) {
-        final DynamicObject thread = context.getThreadManager().getCurrentThread();
+        assert isDrivingThread == lock.isHeldByCurrentThread();
+
+        final RubyThread thread = context.getThreadManager().getCurrentThread();
 
         // Wait for other threads to reach their safepoint
         if (isDrivingThread) {
@@ -144,7 +152,7 @@ public class SafepointManager {
         final SafepointAction deferredAction = deferred ? action : null;
 
         try {
-            if (!deferred && thread != null) {
+            if (!deferred) {
                 action.accept(thread, currentNode);
             }
         } finally {
@@ -201,10 +209,12 @@ public class SafepointManager {
     }
 
     private void printStacktracesOfBlockedThreads() {
+        final Thread drivingThread = Thread.currentThread();
+
         System.err.println("Dumping stacktraces of all threads:");
         for (Entry<Thread, StackTraceElement[]> entry : Thread.getAllStackTraces().entrySet()) {
             final Thread thread = entry.getKey();
-            if (thread != Thread.currentThread() && runningThreads.contains(thread)) {
+            if (runningThreads.contains(thread)) {
                 final StackTraceElement[] stackTrace = entry.getValue();
                 boolean blocked = true;
 
@@ -217,7 +227,8 @@ public class SafepointManager {
                     }
                 }
 
-                System.err.println((blocked ? "BLOCKED: " : "IN SAFEPOINT: ") + thread);
+                String kind = thread == drivingThread ? "DRIVER" : (blocked ? "BLOCKED" : "IN SAFEPOINT");
+                System.err.println(kind + ": " + thread);
                 for (StackTraceElement stackTraceElement : stackTrace) {
                     System.err.println(stackTraceElement);
                 }
@@ -237,7 +248,7 @@ public class SafepointManager {
     }
 
     @TruffleBoundary
-    public void pauseAllThreadsAndExecute(Node currentNode, boolean deferred, SafepointAction action) {
+    public void pauseAllThreadsAndExecute(String reason, Node currentNode, boolean deferred, SafepointAction action) {
         if (lock.isHeldByCurrentThread()) {
             throw new IllegalStateException("Re-entered SafepointManager");
         }
@@ -248,7 +259,7 @@ public class SafepointManager {
         }
 
         try {
-            pauseAllThreadsAndExecute(currentNode, action, deferred);
+            pauseAllThreadsAndExecute(reason, currentNode, action, deferred);
         } finally {
             lock.unlock();
         }
@@ -260,7 +271,7 @@ public class SafepointManager {
     }
 
     @TruffleBoundary
-    public void pauseAllThreadsAndExecuteFromNonRubyThread(boolean deferred, SafepointAction action) {
+    public void pauseAllThreadsAndExecuteFromNonRubyThread(String reason, boolean deferred, SafepointAction action) {
         if (lock.isHeldByCurrentThread()) {
             throw new IllegalStateException("Re-entered SafepointManager");
         }
@@ -274,7 +285,7 @@ public class SafepointManager {
         try {
             enterThread();
             try {
-                pauseAllThreadsAndExecute(null, action, deferred);
+                pauseAllThreadsAndExecute(reason, null, action, deferred);
             } finally {
                 leaveThread();
             }
@@ -286,10 +297,11 @@ public class SafepointManager {
     // Variant for a single thread
 
     @TruffleBoundary
-    public void pauseRubyThreadAndExecute(DynamicObject rubyThread, Node currentNode, SafepointAction action) {
+    public void pauseRubyThreadAndExecute(String reason, RubyThread rubyThread, Node currentNode,
+            SafepointAction action) {
         final ThreadManager threadManager = context.getThreadManager();
-        final DynamicObject currentThread = threadManager.getCurrentThread();
-        final FiberManager fiberManager = Layouts.THREAD.getFiberManager(rubyThread);
+        final RubyThread currentThread = threadManager.getCurrentThread();
+        final FiberManager fiberManager = rubyThread.fiberManager;
 
         if (currentThread == rubyThread) {
             if (threadManager.getRubyFiberFromCurrentJavaThread() != fiberManager.getCurrentFiber()) {
@@ -299,7 +311,7 @@ public class SafepointManager {
             // fast path if we are already the right thread
             action.accept(rubyThread, currentNode);
         } else {
-            pauseAllThreadsAndExecute(currentNode, false, (thread, currentNode1) -> {
+            pauseAllThreadsAndExecute(reason, currentNode, false, (thread, currentNode1) -> {
                 if (thread == rubyThread &&
                         threadManager.getRubyFiberFromCurrentJavaThread() == fiberManager.getCurrentFiber()) {
                     action.accept(thread, currentNode1);
@@ -308,14 +320,13 @@ public class SafepointManager {
         }
     }
 
-    private void pauseAllThreadsAndExecute(Node currentNode, SafepointAction action, boolean deferred) {
+    private void pauseAllThreadsAndExecute(String reason, Node currentNode, SafepointAction action, boolean deferred) {
         this.action = action;
         this.deferred = deferred;
 
-        /* this is a potential cause for race conditions, but we need to invalidate first so the interrupted threads see
-         * the invalidation in poll() in their catch(InterruptedException) clause and wait on the barrier instead of
-         * retrying their blocking action. */
-        assumption.invalidate();
+        /* We need to invalidate first so the interrupted threads see the invalidation in poll() in their
+         * catch(InterruptedException) clause and wait on the Phaser instead of retrying their blocking action. */
+        assumption.invalidate(reason);
         interruptOtherThreads();
 
         step(currentNode, true);

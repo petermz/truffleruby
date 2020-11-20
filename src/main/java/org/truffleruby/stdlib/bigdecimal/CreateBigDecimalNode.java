@@ -17,22 +17,24 @@ import java.util.regex.MatchResult;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import org.truffleruby.Layouts;
+import com.oracle.truffle.api.dsl.CachedLanguage;
+import org.truffleruby.RubyLanguage;
 import org.truffleruby.core.cast.BooleanCastNode;
 import org.truffleruby.core.numeric.BigDecimalOps;
-import org.truffleruby.core.string.StringOperations;
+import org.truffleruby.core.numeric.RubyBignum;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.language.NotProvided;
+import org.truffleruby.language.RubyDynamicObject;
 import org.truffleruby.language.RubyNode;
 import org.truffleruby.language.control.RaiseException;
-import org.truffleruby.language.dispatch.CallDispatchHeadNode;
-import org.truffleruby.language.objects.AllocateObjectNode;
+import org.truffleruby.language.dispatch.DispatchNode;
+import org.truffleruby.language.objects.AllocateHelperNode;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.ImportStatic;
 import com.oracle.truffle.api.dsl.NodeChild;
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.BranchProfile;
 import com.oracle.truffle.api.profiles.ConditionProfile;
 
@@ -47,72 +49,95 @@ public abstract class CreateBigDecimalNode extends BigDecimalCoreMethodNode {
     private static final Pattern NUMBER_PATTERN_NON_STRICT = Pattern.compile("^([+-]?\\d*\\.?\\d*" + EXPONENT + ").*");
     private static final Pattern ZERO_PATTERN = Pattern.compile("^[+-]?0*\\.?0*" + EXPONENT + "$");
 
-    @Child private AllocateObjectNode allocateNode = AllocateObjectNode.create();
+    @Child private AllocateHelperNode allocateNode = AllocateHelperNode.create();
 
-    public abstract DynamicObject executeCreate(Object value, Object digits, boolean strict);
+    public abstract RubyBigDecimal executeCreate(Object value, Object digits, boolean strict);
 
-    private DynamicObject createNormalBigDecimal(BigDecimal value) {
-        return allocateNode.allocate(getBigDecimalClass(), Layouts.BIG_DECIMAL.build(value, BigDecimalType.NORMAL));
+    private RubyBigDecimal createNormalBigDecimal(RubyLanguage language, BigDecimal value) {
+        final RubyBigDecimal instance = new RubyBigDecimal(
+                coreLibrary().bigDecimalClass,
+                RubyLanguage.bigDecimalShape,
+                value,
+                BigDecimalType.NORMAL);
+        allocateNode.trace(instance, this, language);
+        return instance;
     }
 
-    private DynamicObject createSpecialBigDecimal(BigDecimalType type) {
-        return allocateNode.allocate(getBigDecimalClass(), Layouts.BIG_DECIMAL.build(BigDecimal.ZERO, type));
+    private RubyBigDecimal createSpecialBigDecimal(RubyLanguage language, BigDecimalType type) {
+        final RubyBigDecimal instance = new RubyBigDecimal(
+                coreLibrary().bigDecimalClass,
+                RubyLanguage.bigDecimalShape,
+                BigDecimal.ZERO,
+                type);
+        allocateNode.trace(instance, this, language);
+        return instance;
     }
 
     @Specialization
-    protected DynamicObject create(long value, NotProvided digits, boolean strict) {
+    protected RubyBigDecimal create(long value, NotProvided digits, boolean strict) {
         return executeCreate(value, 0, strict);
     }
 
     @Specialization
-    protected DynamicObject create(long value, int digits, boolean strict,
-            @Cached BigDecimalCastNode bigDecimalCastNode) {
+    protected RubyBigDecimal create(long value, int digits, boolean strict,
+            @Cached BigDecimalCastNode bigDecimalCastNode,
+            @CachedLanguage RubyLanguage language) {
         BigDecimal bigDecimal = round(
                 (BigDecimal) bigDecimalCastNode.execute(value, digits, getRoundMode()),
                 BigDecimalOps.newMathContext(digits, getRoundMode()));
-        return createNormalBigDecimal(bigDecimal);
+        return createNormalBigDecimal(language, bigDecimal);
     }
 
     @Specialization
-    protected DynamicObject create(double value, NotProvided digits, boolean strict,
+    protected RubyBigDecimal create(double value, NotProvided digits, boolean strict,
             @Cached ConditionProfile finiteValueProfile,
             @Cached BranchProfile nanProfile,
             @Cached BranchProfile positiveInfinityProfile,
-            @Cached BranchProfile negativeInfinityProfile) {
+            @Cached BranchProfile negativeInfinityProfile,
+            @CachedLanguage RubyLanguage language) {
         if (finiteValueProfile.profile(Double.isFinite(value))) {
             throw new RaiseException(getContext(), coreExceptions().argumentErrorCantOmitPrecision(this));
         } else {
-            return createNonFiniteBigDecimal(value, nanProfile, positiveInfinityProfile, negativeInfinityProfile);
+            return createNonFiniteBigDecimal(
+                    language,
+                    value,
+                    nanProfile,
+                    positiveInfinityProfile,
+                    negativeInfinityProfile);
         }
     }
 
     @Specialization(guards = "isNegativeZero(value)")
-    protected DynamicObject createNegativeZero(double value, int digits, boolean strict) {
-        return createSpecialBigDecimal(BigDecimalType.NEGATIVE_ZERO);
+    protected RubyBigDecimal createNegativeZero(double value, int digits, boolean strict,
+            @CachedLanguage RubyLanguage language) {
+        return createSpecialBigDecimal(language, BigDecimalType.NEGATIVE_ZERO);
     }
 
     @Specialization(guards = { "isFinite(value)", "!isNegativeZero(value)" })
-    protected DynamicObject createFinite(double value, int digits, boolean strict,
-            @Cached BigDecimalCastNode bigDecimalCastNode) {
+    protected RubyBigDecimal createFinite(double value, int digits, boolean strict,
+            @Cached BigDecimalCastNode bigDecimalCastNode,
+            @CachedLanguage RubyLanguage language) {
         final RoundingMode roundMode = getRoundMode();
         final BigDecimal bigDecimal = (BigDecimal) bigDecimalCastNode.execute(value, digits, roundMode);
-        return createNormalBigDecimal(round(bigDecimal, BigDecimalOps.newMathContext(digits, roundMode)));
+        return createNormalBigDecimal(language, round(bigDecimal, BigDecimalOps.newMathContext(digits, roundMode)));
     }
 
     @Specialization(guards = "!isFinite(value)")
-    protected DynamicObject createInfinite(double value, int digits, boolean strict,
+    protected RubyBigDecimal createInfinite(double value, int digits, boolean strict,
             @Cached BranchProfile nanProfile,
             @Cached BranchProfile positiveInfinityProfile,
-            @Cached BranchProfile negativeInfinityProfile) {
-        return createNonFiniteBigDecimal(value, nanProfile, positiveInfinityProfile, negativeInfinityProfile);
+            @Cached BranchProfile negativeInfinityProfile,
+            @CachedLanguage RubyLanguage language) {
+        return createNonFiniteBigDecimal(language, value, nanProfile, positiveInfinityProfile, negativeInfinityProfile);
     }
 
     @Specialization(guards = "type == NEGATIVE_INFINITY || type == POSITIVE_INFINITY")
-    protected DynamicObject createInfinity(BigDecimalType type, Object digits, boolean strict,
+    protected RubyBigDecimal createInfinity(BigDecimalType type, Object digits, boolean strict,
             @Cached BooleanCastNode booleanCastNode,
             @Cached GetIntegerConstantNode getIntegerConstantNode,
-            @Cached("createPrivate()") CallDispatchHeadNode modeCallNode,
-            @Cached ConditionProfile raiseProfile) {
+            @Cached DispatchNode modeCallNode,
+            @Cached ConditionProfile raiseProfile,
+            @CachedLanguage RubyLanguage language) {
         // TODO (pitr 21-Jun-2015): raise on underflow
 
         final int exceptionConstant = getIntegerConstantNode
@@ -125,15 +150,16 @@ public abstract class CreateBigDecimalNode extends BigDecimalCoreMethodNode {
             throw new RaiseException(getContext(), coreExceptions().floatDomainErrorResultsToInfinity(this));
         }
 
-        return createSpecialBigDecimal(type);
+        return createSpecialBigDecimal(language, type);
     }
 
     @Specialization(guards = "type == NAN")
-    protected DynamicObject createNaN(BigDecimalType type, Object digits, boolean strict,
+    protected RubyBigDecimal createNaN(BigDecimalType type, Object digits, boolean strict,
             @Cached BooleanCastNode booleanCastNode,
             @Cached GetIntegerConstantNode getIntegerConstantNode,
-            @Cached("createPrivate()") CallDispatchHeadNode modeCallNode,
-            @Cached ConditionProfile raiseProfile) {
+            @Cached DispatchNode modeCallNode,
+            @Cached ConditionProfile raiseProfile,
+            @CachedLanguage RubyLanguage language) {
         // TODO (pitr 21-Jun-2015): raise on underflow
 
         final int exceptionConstant = getIntegerConstantNode.executeGetIntegerConstant(
@@ -147,65 +173,75 @@ public abstract class CreateBigDecimalNode extends BigDecimalCoreMethodNode {
             throw new RaiseException(getContext(), coreExceptions().floatDomainErrorResultsToNaN(this));
         }
 
-        return createSpecialBigDecimal(type);
+        return createSpecialBigDecimal(language, type);
     }
 
     @Specialization(guards = "type == NEGATIVE_ZERO")
-    protected DynamicObject createNegativeZero(BigDecimalType type, Object digits, boolean strict) {
-        return createSpecialBigDecimal(type);
+    protected RubyBigDecimal createNegativeZero(BigDecimalType type, Object digits, boolean strict,
+            @CachedLanguage RubyLanguage language) {
+        return createSpecialBigDecimal(language, type);
     }
 
     @Specialization
-    protected DynamicObject create(BigDecimal value, NotProvided digits, boolean strict) {
-        return create(value, 0, strict);
+    protected RubyBigDecimal create(BigDecimal value, NotProvided digits, boolean strict,
+            @CachedLanguage RubyLanguage language) {
+        return create(value, 0, strict, language);
     }
 
     @Specialization
-    protected DynamicObject create(BigDecimal value, int digits, boolean strict) {
-        return createNormalBigDecimal(round(value, BigDecimalOps.newMathContext(digits, getRoundMode())));
+    protected RubyBigDecimal create(BigDecimal value, int digits, boolean strict,
+            @CachedLanguage RubyLanguage language) {
+        return createNormalBigDecimal(language, round(value, BigDecimalOps.newMathContext(digits, getRoundMode())));
     }
 
-    @Specialization(guards = "isRubyBignum(value)")
-    protected DynamicObject createBignum(DynamicObject value, NotProvided digits, boolean strict) {
-        return createBignum(value, 0, strict);
+    @Specialization
+    protected RubyBigDecimal createBignum(RubyBignum value, NotProvided digits, boolean strict,
+            @CachedLanguage RubyLanguage language) {
+        return createBignum(value, 0, strict, language);
     }
 
-    @Specialization(guards = "isRubyBignum(value)")
-    protected DynamicObject createBignum(DynamicObject value, int digits, boolean strict) {
+    @Specialization
+    protected RubyBigDecimal createBignum(RubyBignum value, int digits, boolean strict,
+            @CachedLanguage RubyLanguage language) {
         return createNormalBigDecimal(
+                language,
                 round(BigDecimalOps.fromBigInteger(value), BigDecimalOps.newMathContext(digits, getRoundMode())));
     }
 
-    @Specialization(guards = "isRubyBigDecimal(value)")
-    protected DynamicObject createBigDecimal(DynamicObject value, NotProvided digits, boolean strict) {
+    @Specialization
+    protected RubyBigDecimal createBigDecimal(RubyBigDecimal value, NotProvided digits, boolean strict,
+            @CachedLanguage RubyLanguage language) {
         return createBigDecimal(value, 0, strict);
     }
 
-    @Specialization(guards = "isRubyBigDecimal(value)")
-    protected DynamicObject createBigDecimal(DynamicObject value, int digits, boolean strict) {
+    @Specialization
+    protected RubyBigDecimal createBigDecimal(RubyBigDecimal value, int digits, boolean strict,
+            @CachedLanguage RubyLanguage language) {
         return createNormalBigDecimal(
-                round(Layouts.BIG_DECIMAL.getValue(value), BigDecimalOps.newMathContext(digits, getRoundMode())));
+                language,
+                round(value.value, BigDecimalOps.newMathContext(digits, getRoundMode())));
     }
 
-    @Specialization(guards = "isRubyString(value)")
-    protected DynamicObject createString(DynamicObject value, NotProvided digits, boolean strict) {
+    @Specialization
+    protected RubyBigDecimal createString(RubyString value, NotProvided digits, boolean strict) {
         return createString(value, 0, strict);
     }
 
     @TruffleBoundary
-    @Specialization(guards = "isRubyString(value)")
-    protected DynamicObject createString(DynamicObject value, int digits, boolean strict) {
-        return executeCreate(getValueFromString(StringOperations.getString(value), digits, strict), digits, strict);
+    @Specialization
+    protected RubyBigDecimal createString(RubyString value, int digits, boolean strict) {
+        return executeCreate(getValueFromString(value.getJavaString(), digits, strict), digits, strict);
     }
 
     @Specialization(guards = { "!isRubyBignum(value)", "!isRubyBigDecimal(value)", "!isRubyString(value)" })
-    protected DynamicObject create(DynamicObject value, int digits, boolean strict,
+    protected RubyBigDecimal create(RubyDynamicObject value, int digits, boolean strict,
             @Cached BigDecimalCastNode bigDecimalCastNode,
-            @Cached ConditionProfile castProfile) {
+            @Cached ConditionProfile castProfile,
+            @CachedLanguage RubyLanguage language) {
         final Object castedValue = bigDecimalCastNode.execute(value, digits, getRoundMode());
 
         if (castProfile.profile(castedValue instanceof BigDecimal)) {
-            return createNormalBigDecimal((BigDecimal) castedValue);
+            return createNormalBigDecimal(language, (BigDecimal) castedValue);
         } else {
             throw new RaiseException(getContext(), coreExceptions().typeErrorCantBeCastedToBigDecimal(this));
         }
@@ -295,18 +331,18 @@ public abstract class CreateBigDecimalNode extends BigDecimalCoreMethodNode {
         }
     }
 
-    private DynamicObject createNonFiniteBigDecimal(double value, BranchProfile nanProfile,
+    private RubyBigDecimal createNonFiniteBigDecimal(RubyLanguage language, double value, BranchProfile nanProfile,
             BranchProfile positiveInfinityProfile, BranchProfile negativeInfinityProfile) {
         if (Double.isNaN(value)) {
             nanProfile.enter();
-            return createSpecialBigDecimal(BigDecimalType.NAN);
+            return createSpecialBigDecimal(language, BigDecimalType.NAN);
         } else {
             if (value == Double.POSITIVE_INFINITY) {
                 positiveInfinityProfile.enter();
-                return createSpecialBigDecimal(BigDecimalType.POSITIVE_INFINITY);
+                return createSpecialBigDecimal(language, BigDecimalType.POSITIVE_INFINITY);
             } else {
                 negativeInfinityProfile.enter();
-                return createSpecialBigDecimal(BigDecimalType.NEGATIVE_INFINITY);
+                return createSpecialBigDecimal(language, BigDecimalType.NEGATIVE_INFINITY);
             }
         }
     }

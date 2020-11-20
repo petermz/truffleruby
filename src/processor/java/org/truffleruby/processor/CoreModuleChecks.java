@@ -18,6 +18,7 @@ import javax.lang.model.element.VariableElement;
 import javax.lang.model.type.TypeKind;
 import javax.tools.Diagnostic;
 
+import com.oracle.truffle.api.dsl.CachedLanguage;
 import org.truffleruby.builtins.CoreMethod;
 
 import com.oracle.truffle.api.dsl.Cached;
@@ -153,7 +154,8 @@ public class CoreModuleChecks {
         while (n >= 0 &&
                 (parameters.get(n).getAnnotation(Cached.class) != null ||
                         parameters.get(n).getAnnotation(CachedLibrary.class) != null ||
-                        parameters.get(n).getAnnotation(CachedContext.class) != null)) {
+                        parameters.get(n).getAnnotation(CachedContext.class) != null ||
+                        parameters.get(n).getAnnotation(CachedLanguage.class) != null)) {
             n--;
         }
 
@@ -208,7 +210,7 @@ public class CoreModuleChecks {
 
         // A specialization will only be called if the types of the arguments match its declared parameter
         // types. So a specialization with a declared optional parameter of type NotProvided will only be
-        // called if that argument is not supplied. Similarly a specialization with a DynamicObject optional
+        // called if that argument is not supplied. Similarly a specialization with a RubyDynamicObject optional
         // parameter will only be called if the value has been supplied.
         //
         // Since Object is the super type of NotProvided any optional parameter declaration of type Object
@@ -236,8 +238,7 @@ public class CoreModuleChecks {
     private static boolean isGuarded(String name, String[] guards) {
         for (String guard : guards) {
             if (guard.equals("wasProvided(" + name + ")") ||
-                    guard.equals("wasNotProvided(" + name + ")") ||
-                    guard.equals("isNil(" + name + ")")) {
+                    guard.equals("wasNotProvided(" + name + ")")) {
                 return true;
             }
         }

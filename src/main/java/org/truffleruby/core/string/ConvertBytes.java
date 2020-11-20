@@ -27,13 +27,12 @@ import org.truffleruby.language.control.RaiseException;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.nodes.Node;
-import com.oracle.truffle.api.object.DynamicObject;
 
 public class ConvertBytes {
     private final RubyContext context;
     private final Node node;
     private final FixnumOrBignumNode fixnumOrBignumNode;
-    private final DynamicObject _str;
+    private final RubyString _str;
     private int str;
     private int end;
     private byte[] data;
@@ -45,10 +44,10 @@ public class ConvertBytes {
             Node node,
             FixnumOrBignumNode fixnumOrBignumNode,
             RopeNodes.BytesNode bytesNode,
-            DynamicObject _str,
+            RubyString _str,
             int base,
             boolean badcheck) {
-        final Rope rope = StringOperations.rope(_str);
+        final Rope rope = _str.rope;
 
         this.context = context;
         this.node = node;
@@ -72,7 +71,7 @@ public class ConvertBytes {
     /** rb_cstr_to_inum */
 
     public static Object byteListToInum19(RubyContext context, Node node, FixnumOrBignumNode fixnumOrBignumNode,
-            RopeNodes.BytesNode bytesNode, DynamicObject str, int base, boolean badcheck) {
+            RopeNodes.BytesNode bytesNode, RubyString str, int base, boolean badcheck) {
         return new ConvertBytes(context, node, fixnumOrBignumNode, bytesNode, str, base, badcheck).byteListToInum();
     }
 
@@ -148,9 +147,8 @@ public class ConvertBytes {
         }
     }
 
-    @SuppressWarnings("fallthrough")
     private int calculateLength() {
-        int len = 0;
+        int len;
         byte second = ((str + 1 < end) && data[str] == '0') ? data[str + 1] : (byte) 0;
 
         switch (base) {
@@ -167,6 +165,8 @@ public class ConvertBytes {
                 if (second == 'o' || second == 'O') {
                     str += 2;
                 }
+                len = 3;
+                break;
             case 4:
             case 5:
             case 6:
@@ -177,6 +177,8 @@ public class ConvertBytes {
                 if (second == 'd' || second == 'D') {
                     str += 2;
                 }
+                len = 4;
+                break;
             case 9:
             case 11:
             case 12:

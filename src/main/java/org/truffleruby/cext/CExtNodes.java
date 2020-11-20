@@ -9,17 +9,17 @@
  */
 package org.truffleruby.cext;
 
-import static org.truffleruby.core.string.StringOperations.rope;
-
 import java.math.BigInteger;
 import java.util.concurrent.locks.ReentrantLock;
 
+import com.oracle.truffle.api.dsl.CachedLanguage;
+import com.oracle.truffle.api.object.DynamicObjectLibrary;
 import org.jcodings.Encoding;
 import org.jcodings.IntHolder;
 import org.jcodings.specific.USASCIIEncoding;
 import org.jcodings.specific.UTF8Encoding;
 import org.truffleruby.Layouts;
-import org.truffleruby.RubyContext;
+import org.truffleruby.RubyLanguage;
 import org.truffleruby.builtins.CoreMethod;
 import org.truffleruby.builtins.CoreMethodArrayArgumentsNode;
 import org.truffleruby.builtins.CoreMethodNode;
@@ -34,33 +34,43 @@ import org.truffleruby.core.MarkingService.ExtensionCallStack;
 import org.truffleruby.core.MarkingServiceNodes;
 import org.truffleruby.core.array.ArrayHelpers;
 import org.truffleruby.core.array.ArrayToObjectArrayNode;
-import org.truffleruby.core.encoding.EncodingOperations;
+import org.truffleruby.core.array.RubyArray;
+import org.truffleruby.core.encoding.RubyEncoding;
 import org.truffleruby.core.exception.ErrnoErrorNode;
-import org.truffleruby.core.hash.HashNode;
+import org.truffleruby.core.exception.ExceptionOperations;
+import org.truffleruby.core.hash.HashingNodes;
+import org.truffleruby.core.klass.RubyClass;
 import org.truffleruby.core.module.MethodLookupResult;
 import org.truffleruby.core.module.ModuleNodes.ConstSetNode;
 import org.truffleruby.core.module.ModuleNodes.SetVisibilityNode;
 import org.truffleruby.core.module.ModuleNodesFactory.SetVisibilityNodeGen;
 import org.truffleruby.core.module.ModuleOperations;
+import org.truffleruby.core.module.RubyModule;
 import org.truffleruby.core.mutex.MutexOperations;
 import org.truffleruby.core.numeric.BigIntegerOps;
 import org.truffleruby.core.numeric.BignumOperations;
 import org.truffleruby.core.numeric.FixnumOrBignumNode;
+import org.truffleruby.core.numeric.RubyBignum;
+import org.truffleruby.core.proc.RubyProc;
 import org.truffleruby.core.rope.CodeRange;
 import org.truffleruby.core.rope.NativeRope;
 import org.truffleruby.core.rope.Rope;
 import org.truffleruby.core.rope.RopeNodes;
 import org.truffleruby.core.rope.RopeOperations;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.core.string.StringNodes;
 import org.truffleruby.core.string.StringOperations;
 import org.truffleruby.core.string.StringSupport;
 import org.truffleruby.core.support.TypeNodes;
 import org.truffleruby.core.symbol.RubySymbol;
+import org.truffleruby.extra.ffi.RubyPointer;
+import org.truffleruby.interop.InteropNodes;
 import org.truffleruby.interop.ToJavaStringNode;
+import org.truffleruby.interop.TranslateInteropExceptionNode;
 import org.truffleruby.language.LexicalScope;
-import org.truffleruby.language.Nil;
 import org.truffleruby.language.NotProvided;
 import org.truffleruby.language.RubyContextNode;
+import org.truffleruby.language.RubyDynamicObject;
 import org.truffleruby.language.RubyGuards;
 import org.truffleruby.language.RubyNode;
 import org.truffleruby.language.RubyRootNode;
@@ -71,19 +81,17 @@ import org.truffleruby.language.constants.GetConstantNode;
 import org.truffleruby.language.constants.LookupConstantNode;
 import org.truffleruby.language.control.BreakException;
 import org.truffleruby.language.control.BreakID;
-import org.truffleruby.language.control.JavaException;
 import org.truffleruby.language.control.RaiseException;
-import org.truffleruby.language.dispatch.CallDispatchHeadNode;
-import org.truffleruby.language.dispatch.DoesRespondDispatchHeadNode;
+import org.truffleruby.language.dispatch.DispatchNode;
 import org.truffleruby.language.methods.DeclarationContext;
 import org.truffleruby.language.methods.InternalMethod;
-import org.truffleruby.language.objects.AllocateObjectNode;
+import org.truffleruby.language.objects.AllocateHelperNode;
 import org.truffleruby.language.objects.InitializeClassNode;
 import org.truffleruby.language.objects.InitializeClassNodeGen;
 import org.truffleruby.language.objects.MetaClassNode;
-import org.truffleruby.language.objects.ReadObjectFieldNode;
 import org.truffleruby.language.objects.WriteObjectFieldNode;
 import org.truffleruby.language.supercall.CallSuperMethodNode;
+import org.truffleruby.language.yield.YieldNode;
 import org.truffleruby.parser.Identifiers;
 import org.truffleruby.utils.Utils;
 
@@ -97,69 +105,17 @@ import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.frame.Frame;
 import com.oracle.truffle.api.frame.FrameInstance.FrameAccess;
 import com.oracle.truffle.api.frame.VirtualFrame;
-import com.oracle.truffle.api.interop.ArityException;
 import com.oracle.truffle.api.interop.InteropLibrary;
-import com.oracle.truffle.api.interop.UnsupportedMessageException;
-import com.oracle.truffle.api.interop.UnsupportedTypeException;
 import com.oracle.truffle.api.library.CachedLibrary;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.RootNode;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.BranchProfile;
 import com.oracle.truffle.api.profiles.ConditionProfile;
 import com.oracle.truffle.api.source.SourceSection;
 
+
 @CoreModule("Truffle::CExt")
 public class CExtNodes {
-
-    @Primitive(name = "call_with_c_mutex")
-    public abstract static class CallCWithMutexNode extends PrimitiveArrayArgumentsNode {
-
-        public abstract Object execute(Object receiver, DynamicObject argsArray);
-
-        @Specialization(limit = "getCacheLimit()")
-        protected Object callCWithMutex(Object receiver, DynamicObject argsArray,
-                @CachedLibrary("receiver") InteropLibrary receivers,
-                @Cached ArrayToObjectArrayNode arrayToObjectArrayNode,
-                @Cached BranchProfile exceptionProfile,
-                @Cached ConditionProfile ownedProfile) {
-            final Object[] args = arrayToObjectArrayNode.executeToObjectArray(argsArray);
-
-            if (getContext().getOptions().CEXT_LOCK) {
-                final ReentrantLock lock = getContext().getCExtensionsLock();
-                boolean owned = lock.isHeldByCurrentThread();
-
-                if (ownedProfile.profile(!owned)) {
-                    MutexOperations.lockInternal(getContext(), lock, this);
-                    try {
-                        return execute(receiver, args, receivers, exceptionProfile);
-                    } finally {
-                        MutexOperations.unlockInternal(lock);
-                    }
-                } else {
-                    return execute(receiver, args, receivers, exceptionProfile);
-                }
-            } else {
-                return execute(receiver, args, receivers, exceptionProfile);
-            }
-
-        }
-
-        private Object execute(Object receiver, Object[] args, InteropLibrary receivers,
-                BranchProfile exceptionProfile) {
-            try {
-                return receivers.execute(receiver, args);
-            } catch (UnsupportedTypeException | ArityException | UnsupportedMessageException e) {
-                exceptionProfile.enter();
-                throw new JavaException(e);
-            }
-        }
-
-        protected int getCacheLimit() {
-            return getContext().getOptions().DISPATCH_CACHE;
-        }
-
-    }
 
     @Primitive(name = "call_with_c_mutex_and_frame")
     public abstract static class CallCWithMuteAndFramexNode extends PrimitiveArrayArgumentsNode {
@@ -167,7 +123,7 @@ public class CExtNodes {
         @Child protected CallCWithMutexNode callCextNode = CallCWithMutexNodeFactory.create(RubyNode.EMPTY_ARRAY);
 
         @Specialization
-        protected Object callCWithMutex(Object receiver, DynamicObject argsArray, Object block,
+        protected Object callCWithMutex(Object receiver, RubyArray argsArray, Object block,
                 @Cached MarkingServiceNodes.GetMarkerThreadLocalDataNode getDataNode) {
             ExtensionCallStack extensionStack = getDataNode.execute().getExtensionCallStack();
             extensionStack.push(block);
@@ -180,45 +136,73 @@ public class CExtNodes {
         }
     }
 
-    @Primitive(name = "call_without_c_mutex")
-    public abstract static class CallCWithoutMutexNode extends PrimitiveArrayArgumentsNode {
+    @Primitive(name = "call_with_c_mutex")
+    public abstract static class CallCWithMutexNode extends PrimitiveArrayArgumentsNode {
+
+        public abstract Object execute(Object receiver, RubyArray argsArray);
 
         @Specialization(limit = "getCacheLimit()")
-        protected Object callCWithoutMutex(Object receiver, DynamicObject argsArray,
-                @Cached ArrayToObjectArrayNode arrayToObjectArrayNode,
+        protected Object callCWithMutex(Object receiver, RubyArray argsArray,
                 @CachedLibrary("receiver") InteropLibrary receivers,
-                @Cached BranchProfile exceptionProfile,
+                @Cached ArrayToObjectArrayNode arrayToObjectArrayNode,
+                @Cached TranslateInteropExceptionNode translateInteropExceptionNode,
                 @Cached ConditionProfile ownedProfile) {
             final Object[] args = arrayToObjectArrayNode.executeToObjectArray(argsArray);
 
             if (getContext().getOptions().CEXT_LOCK) {
                 final ReentrantLock lock = getContext().getCExtensionsLock();
-                boolean owned = lock.isHeldByCurrentThread();
+                boolean owned = ownedProfile.profile(lock.isHeldByCurrentThread());
 
-                if (ownedProfile.profile(owned)) {
-                    MutexOperations.unlockInternal(lock);
-                    try {
-                        return execute(receiver, args, receivers, exceptionProfile);
-                    } finally {
-                        MutexOperations.lockInternal(getContext(), lock, this);
+                if (!owned) {
+                    MutexOperations.lockInternal(getContext(), lock, this);
+                }
+                try {
+                    return InteropNodes.execute(receiver, args, receivers, translateInteropExceptionNode);
+                } finally {
+                    if (!owned) {
+                        MutexOperations.unlockInternal(lock);
                     }
-                } else {
-                    return execute(receiver, args, receivers, exceptionProfile);
                 }
             } else {
-                return execute(receiver, args, receivers, exceptionProfile);
+                return InteropNodes.execute(receiver, args, receivers, translateInteropExceptionNode);
             }
 
         }
 
-        private Object execute(Object receiver, Object[] args, InteropLibrary receivers,
-                BranchProfile exceptionProfile) {
-            try {
-                return receivers.execute(receiver, args);
-            } catch (UnsupportedTypeException | ArityException | UnsupportedMessageException e) {
-                exceptionProfile.enter();
-                throw new JavaException(e);
+        protected int getCacheLimit() {
+            return getContext().getOptions().DISPATCH_CACHE;
+        }
+    }
+
+    @Primitive(name = "call_without_c_mutex")
+    public abstract static class CallCWithoutMutexNode extends PrimitiveArrayArgumentsNode {
+
+        @Specialization(limit = "getCacheLimit()")
+        protected Object callCWithoutMutex(Object receiver, RubyArray argsArray,
+                @Cached ArrayToObjectArrayNode arrayToObjectArrayNode,
+                @CachedLibrary("receiver") InteropLibrary receivers,
+                @Cached TranslateInteropExceptionNode translateInteropExceptionNode,
+                @Cached ConditionProfile ownedProfile) {
+            final Object[] args = arrayToObjectArrayNode.executeToObjectArray(argsArray);
+
+            if (getContext().getOptions().CEXT_LOCK) {
+                final ReentrantLock lock = getContext().getCExtensionsLock();
+                boolean owned = ownedProfile.profile(lock.isHeldByCurrentThread());
+
+                if (owned) {
+                    MutexOperations.unlockInternal(lock);
+                }
+                try {
+                    return InteropNodes.execute(receiver, args, receivers, translateInteropExceptionNode);
+                } finally {
+                    if (owned) {
+                        MutexOperations.internalLockEvenWithException(getContext(), lock, this);
+                    }
+                }
+            } else {
+                return InteropNodes.execute(receiver, args, receivers, translateInteropExceptionNode);
             }
+
         }
 
         protected int getCacheLimit() {
@@ -238,7 +222,7 @@ public class CExtNodes {
             if (positiveProfile.profile(num >= 0)) {
                 return num;
             } else {
-                return BignumOperations.createBignum(getContext(), toUnsigned(num));
+                return BignumOperations.createBignum(toUnsigned(num));
             }
         }
 
@@ -283,7 +267,7 @@ public class CExtNodes {
 
         @Specialization
         @TruffleBoundary
-        protected DynamicObject bytes(
+        protected RubyArray bytes(
                 int num,
                 int num_words,
                 int word_length,
@@ -296,7 +280,7 @@ public class CExtNodes {
 
         @Specialization
         @TruffleBoundary
-        protected DynamicObject bytes(
+        protected RubyArray bytes(
                 long num,
                 int num_words,
                 int word_length,
@@ -307,20 +291,20 @@ public class CExtNodes {
             return bytes(bi, num_words, word_length, msw_first, twosComp, bigEndian);
         }
 
-        @Specialization(guards = "isRubyBignum(num)")
+        @Specialization
         @TruffleBoundary
-        protected DynamicObject bytes(
-                DynamicObject num,
+        protected RubyArray bytes(
+                RubyBignum num,
                 int num_words,
                 int word_length,
                 boolean msw_first,
                 boolean twosComp,
                 boolean bigEndian) {
-            BigInteger bi = Layouts.BIGNUM.getValue(num);
+            BigInteger bi = num.value;
             return bytes(bi, num_words, word_length, msw_first, twosComp, bigEndian);
         }
 
-        private DynamicObject bytes(BigInteger bi, int num_words, int word_length, boolean msw_first, boolean twosComp,
+        private RubyArray bytes(BigInteger bi, int num_words, int word_length, boolean msw_first, boolean twosComp,
                 boolean bigEndian) {
             if (!twosComp) {
                 bi = bi.abs();
@@ -396,10 +380,10 @@ public class CExtNodes {
             return BigInteger.valueOf(num).abs().bitLength();
         }
 
-        @Specialization(guards = "isRubyBignum(num)")
+        @Specialization
         @TruffleBoundary
-        protected int bitLength(DynamicObject num) {
-            return Layouts.BIGNUM.getValue(num).abs().bitLength();
+        protected int bitLength(RubyBignum num) {
+            return num.value.abs().bitLength();
         }
     }
 
@@ -418,10 +402,10 @@ public class CExtNodes {
             return BigInteger.valueOf(num).bitLength();
         }
 
-        @Specialization(guards = "isRubyBignum(num)")
+        @Specialization
         @TruffleBoundary
-        protected int bitLength(DynamicObject num) {
-            return Layouts.BIGNUM.getValue(num).bitLength();
+        protected int bitLength(RubyBignum num) {
+            return num.value.bitLength();
         }
     }
 
@@ -440,11 +424,11 @@ public class CExtNodes {
             return Long.bitCount(num) == 1 ? 1 : 0;
         }
 
-        @Specialization(guards = "isRubyBignum(num)")
+        @Specialization
         @TruffleBoundary
-        protected int intSinglebitP(DynamicObject num) {
-            assert Layouts.BIGNUM.getValue(num).signum() >= 0;
-            return Layouts.BIGNUM.getValue(num).bitCount() == 1 ? 1 : 0;
+        protected int intSinglebitP(RubyBignum num) {
+            assert num.value.signum() >= 0;
+            return num.value.bitCount() == 1 ? 1 : 0;
         }
     }
 
@@ -476,9 +460,9 @@ public class CExtNodes {
     public abstract static class RBClassOfNode extends CoreMethodArrayArgumentsNode {
 
         @Specialization
-        protected DynamicObject rb_class_of(Object object,
+        protected RubyClass rb_class_of(Object object,
                 @Cached MetaClassNode metaClassNode) {
-            return metaClassNode.executeMetaClass(object);
+            return metaClassNode.execute(object);
         }
 
     }
@@ -511,7 +495,7 @@ public class CExtNodes {
     public abstract static class RbEncCodeRangeClear extends CoreMethodArrayArgumentsNode {
 
         @Specialization
-        protected DynamicObject clearCodeRange(DynamicObject string,
+        protected RubyString clearCodeRange(RubyString string,
                 @Cached StringToNativeNode stringToNativeNode) {
             final NativeRope nativeRope = stringToNativeNode.executeToNative(string);
             nativeRope.clearCodeRange();
@@ -526,8 +510,8 @@ public class CExtNodes {
     public abstract static class CodeToMbcLenNode extends CoreMethodArrayArgumentsNode {
 
         @Specialization
-        protected int codeToMbcLen(int code, DynamicObject encoding) {
-            return EncodingOperations.getEncoding(encoding).codeToMbcLength(code);
+        protected int codeToMbcLen(int code, RubyEncoding encoding) {
+            return encoding.encoding.codeToMbcLength(code);
         }
 
     }
@@ -536,16 +520,16 @@ public class CExtNodes {
     public abstract static class RbEncCodePointLenNode extends CoreMethodArrayArgumentsNode {
 
         @Specialization
-        protected DynamicObject rbEncCodePointLen(DynamicObject string, DynamicObject encoding,
+        protected RubyArray rbEncCodePointLen(RubyString string, RubyEncoding encoding,
                 @Cached RopeNodes.BytesNode bytesNode,
                 @Cached RopeNodes.CalculateCharacterLengthNode calculateCharacterLengthNode,
                 @Cached RopeNodes.CodeRangeNode codeRangeNode,
                 @Cached ConditionProfile sameEncodingProfile,
                 @Cached BranchProfile errorProfile) {
-            final Rope rope = rope(string);
+            final Rope rope = string.rope;
             final byte[] bytes = bytesNode.execute(rope);
             final CodeRange ropeCodeRange = codeRangeNode.execute(rope);
-            final Encoding enc = Layouts.ENCODING.getEncoding(encoding);
+            final Encoding enc = encoding.encoding;
 
             final CodeRange cr;
             if (sameEncodingProfile.profile(enc == rope.getEncoding())) {
@@ -574,9 +558,9 @@ public class CExtNodes {
     public abstract static class RbEncIsAlNumNode extends CoreMethodArrayArgumentsNode {
 
         @TruffleBoundary
-        @Specialization(guards = "isRubyEncoding(value)")
-        protected boolean rbEncIsAlNum(int code, DynamicObject value) {
-            return EncodingOperations.getEncoding(value).isAlnum(code);
+        @Specialization
+        protected boolean rbEncIsAlNum(int code, RubyEncoding value) {
+            return value.encoding.isAlnum(code);
         }
 
     }
@@ -585,9 +569,9 @@ public class CExtNodes {
     public abstract static class RbEncIsSpaceNode extends CoreMethodArrayArgumentsNode {
 
         @TruffleBoundary
-        @Specialization(guards = "isRubyEncoding(value)")
-        protected boolean rbEncIsSpace(int code, DynamicObject value) {
-            return EncodingOperations.getEncoding(value).isSpace(code);
+        @Specialization
+        protected boolean rbEncIsSpace(int code, RubyEncoding value) {
+            return value.encoding.isSpace(code);
         }
 
     }
@@ -596,7 +580,7 @@ public class CExtNodes {
     public abstract static class RbStrNewNulNode extends CoreMethodArrayArgumentsNode {
 
         @Specialization
-        protected DynamicObject rbStrNewNul(int byteLength,
+        protected RubyString rbStrNewNul(int byteLength,
                 @Cached StringNodes.MakeStringNode makeStringNode) {
             final Rope rope = NativeRope.newBuffer(getContext().getFinalizationService(), byteLength, byteLength);
 
@@ -609,7 +593,7 @@ public class CExtNodes {
     public abstract static class RbStrCapacityNode extends CoreMethodArrayArgumentsNode {
 
         @Specialization
-        protected long capacity(DynamicObject string,
+        protected long capacity(RubyString string,
                 @Cached StringToNativeNode stringToNativeNode) {
             return stringToNativeNode.executeToNative(string).getCapacity();
         }
@@ -620,7 +604,7 @@ public class CExtNodes {
     public abstract static class RbStrSetLenNode extends CoreMethodArrayArgumentsNode {
 
         @Specialization
-        protected DynamicObject strSetLen(DynamicObject string, int newByteLength,
+        protected RubyString strSetLen(RubyString string, int newByteLength,
                 @Cached StringToNativeNode stringToNativeNode,
                 @Cached ConditionProfile asciiOnlyProfile) {
             final NativeRope nativeRope = stringToNativeNode.executeToNative(string);
@@ -647,7 +631,7 @@ public class CExtNodes {
     public abstract static class RbStrResizeNode extends CoreMethodArrayArgumentsNode {
 
         @Specialization
-        protected DynamicObject rbStrResize(DynamicObject string, int newByteLength,
+        protected RubyString rbStrResize(RubyString string, int newByteLength,
                 @Cached StringToNativeNode stringToNativeNode) {
             final NativeRope nativeRope = stringToNativeNode.executeToNative(string);
 
@@ -703,7 +687,7 @@ public class CExtNodes {
         }
 
         @Specialization
-        protected Object rbConstGet(DynamicObject module, String name) {
+        protected Object rbConstGet(RubyModule module, String name) {
             return getConstantNode.lookupAndResolveConstant(LexicalScope.IGNORE, module, name, lookupConstantNode);
         }
 
@@ -723,7 +707,7 @@ public class CExtNodes {
         }
 
         @Specialization
-        protected Object rbConstGetFrom(DynamicObject module, String name) {
+        protected Object rbConstGetFrom(RubyModule module, String name) {
             return getConstantNode.lookupAndResolveConstant(LexicalScope.IGNORE, module, name, lookupConstantNode);
         }
 
@@ -741,7 +725,7 @@ public class CExtNodes {
         }
 
         @Specialization
-        protected Object rbConstSet(DynamicObject module, String name, Object value,
+        protected Object rbConstSet(RubyModule module, String name, Object value,
                 @Cached ConstSetNode constSetNode) {
             return constSetNode.setConstantNoCheckName(module, name, value);
         }
@@ -753,8 +737,8 @@ public class CExtNodes {
 
         @Child SetVisibilityNode setVisibilityNode = SetVisibilityNodeGen.create(Visibility.MODULE_FUNCTION);
 
-        @Specialization(guards = "isRubyModule(module)")
-        protected DynamicObject cextModuleFunction(VirtualFrame frame, DynamicObject module, RubySymbol name) {
+        @Specialization
+        protected RubyModule cextModuleFunction(VirtualFrame frame, RubyModule module, RubySymbol name) {
             return setVisibilityNode.executeSetVisibility(frame, module, new Object[]{ name });
         }
 
@@ -771,11 +755,11 @@ public class CExtNodes {
 
             switch (visibility.getString()) {
                 case "private":
-                    return callerVisibility.isPrivate();
+                    return callerVisibility == Visibility.PRIVATE;
                 case "protected":
-                    return callerVisibility.isProtected();
+                    return callerVisibility == Visibility.PROTECTED;
                 case "module_function":
-                    return callerVisibility.isModuleFunction();
+                    return callerVisibility == Visibility.MODULE_FUNCTION;
                 default:
                     throw CompilerDirectives.shouldNotReachHere();
             }
@@ -799,9 +783,9 @@ public class CExtNodes {
 
         @TruffleBoundary
         @Specialization
-        protected DynamicObject sourceFile() {
+        protected RubyString sourceFile() {
             final SourceSection sourceSection = getTopUserSourceSection("rb_sourcefile");
-            final String file = RubyContext.getPath(sourceSection.getSource());
+            final String file = getContext().getSourcePath(sourceSection.getSource());
 
             return makeStringNode.executeMake(file, UTF8Encoding.INSTANCE, CodeRange.CR_UNKNOWN);
         }
@@ -886,11 +870,11 @@ public class CExtNodes {
             final Frame callingMethodFrame = findCallingMethodFrame();
             final InternalMethod callingMethod = RubyArguments.getMethod(callingMethodFrame);
             final Object callingSelf = RubyArguments.getSelf(callingMethodFrame);
-            final DynamicObject callingMetaclass = metaClassNode.executeMetaClass(callingSelf);
+            final RubyClass callingMetaclass = metaClassNode.execute(callingSelf);
             final MethodLookupResult superMethodLookup = ModuleOperations
                     .lookupSuperMethod(callingMethod, callingMetaclass);
             final InternalMethod superMethod = superMethodLookup.getMethod();
-            return callSuperMethodNode.executeCallSuperMethod(frame, callingSelf, superMethod, args, null);
+            return callSuperMethodNode.execute(frame, callingSelf, superMethod, args, null);
         }
 
         @TruffleBoundary
@@ -949,24 +933,11 @@ public class CExtNodes {
     @CoreMethod(names = "rb_syserr_fail", onSingleton = true, required = 2, lowerFixnum = 1)
     public abstract static class RbSysErrFail extends CoreMethodArrayArgumentsNode {
 
-        @Child private ErrnoErrorNode errnoErrorNode = ErrnoErrorNode.create();
-
         @Specialization
-        protected Object rbSysErrFailNoMessage(int errno, Nil message) {
+        protected Object rbSysErrFail(int errno, RubyString message,
+                @Cached ErrnoErrorNode errnoErrorNode) {
             final Backtrace backtrace = getContext().getCallStack().getBacktrace(this);
-            throw new RaiseException(getContext(), errnoError(errno, nil, backtrace));
-        }
-
-        @Specialization(guards = "isRubyString(message)")
-        protected Object rbSysErrFail(int errno, DynamicObject message) {
-            final Backtrace backtrace = getContext().getCallStack().getBacktrace(this);
-            throw new RaiseException(
-                    getContext(),
-                    errnoError(errno, message, backtrace));
-        }
-
-        private DynamicObject errnoError(int errno, Object extraMessage, Backtrace backtrace) {
-            return errnoErrorNode.execute(errno, extraMessage, backtrace);
+            throw new RaiseException(getContext(), errnoErrorNode.execute(errno, message, backtrace));
         }
 
     }
@@ -974,25 +945,19 @@ public class CExtNodes {
     @CoreMethod(names = "rb_hash", onSingleton = true, required = 1)
     public abstract static class RbHashNode extends CoreMethodArrayArgumentsNode {
 
-        @Child private HashNode hash;
-
         @Specialization
-        protected Object rbHash(Object object) {
-            if (hash == null) {
-                CompilerDirectives.transferToInterpreterAndInvalidate();
-                hash = insert(new HashNode());
-            }
-
-            return hash.hash(object, false);
+        protected int rbHash(Object object,
+                @Cached HashingNodes.ToHashByHashCode toHashByHashCode) {
+            return toHashByHashCode.execute(object);
         }
     }
 
     @Primitive(name = "string_pointer_size")
     public abstract static class StringPointerSizeNode extends PrimitiveArrayArgumentsNode {
 
-        @Specialization(guards = "isRubyString(string)")
-        protected int size(DynamicObject string) {
-            final Rope rope = rope(string);
+        @Specialization
+        protected int size(RubyString string) {
+            final Rope rope = string.rope;
             final int byteLength = rope.byteLength();
             int i = 0;
             for (; i < byteLength; i++) {
@@ -1011,15 +976,15 @@ public class CExtNodes {
             return StringToNativeNodeGen.create();
         }
 
-        public abstract NativeRope executeToNative(DynamicObject string);
+        public abstract NativeRope executeToNative(RubyString string);
 
-        @Specialization(guards = "isRubyString(string)")
-        protected NativeRope toNative(DynamicObject string,
+        @Specialization
+        protected NativeRope toNative(RubyString string,
                 @Cached ConditionProfile convertProfile,
                 @Cached RopeNodes.BytesNode bytesNode,
                 @Cached RopeNodes.CharacterLengthNode characterLengthNode,
                 @Cached RopeNodes.CodeRangeNode codeRangeNode) {
-            final Rope currentRope = rope(string);
+            final Rope currentRope = string.rope;
 
             final NativeRope nativeRope;
 
@@ -1043,8 +1008,8 @@ public class CExtNodes {
     @Primitive(name = "string_pointer_to_native")
     public abstract static class StringPointerToNativeNode extends PrimitiveArrayArgumentsNode {
 
-        @Specialization(guards = "isRubyString(string)")
-        protected long toNative(DynamicObject string,
+        @Specialization
+        protected long toNative(RubyString string,
                 @Cached StringToNativeNode stringToNativeNode) {
             final NativeRope nativeRope = stringToNativeNode.executeToNative(string);
 
@@ -1056,14 +1021,19 @@ public class CExtNodes {
     @CoreMethod(names = "string_to_ffi_pointer", onSingleton = true, required = 1)
     public abstract static class StringToPointerNode extends CoreMethodArrayArgumentsNode {
 
-        @Specialization(guards = "isRubyString(string)")
-        protected DynamicObject toNative(DynamicObject string,
+        @Specialization
+        protected RubyPointer toNative(RubyString string,
                 @Cached StringToNativeNode stringToNativeNode,
-                @Cached AllocateObjectNode allocateObjectNode) {
+                @Cached AllocateHelperNode allocateNode,
+                @CachedLanguage RubyLanguage language) {
             final NativeRope nativeRope = stringToNativeNode.executeToNative(string);
 
-            return allocateObjectNode
-                    .allocate(coreLibrary().truffleFFIPointerClass, nativeRope.getNativePointer());
+            final RubyPointer instance = new RubyPointer(
+                    coreLibrary().truffleFFIPointerClass,
+                    RubyLanguage.truffleFFIPointerShape,
+                    nativeRope.getNativePointer());
+            allocateNode.trace(instance, this, language);
+            return instance;
         }
 
     }
@@ -1071,9 +1041,9 @@ public class CExtNodes {
     @Primitive(name = "string_is_native?")
     public abstract static class StringPointerIsNativeNode extends PrimitiveArrayArgumentsNode {
 
-        @Specialization(guards = "isRubyString(string)")
-        protected boolean isNative(DynamicObject string) {
-            return rope(string) instanceof NativeRope;
+        @Specialization
+        protected boolean isNative(RubyString string) {
+            return string.rope instanceof NativeRope;
         }
 
     }
@@ -1081,12 +1051,12 @@ public class CExtNodes {
     @Primitive(name = "string_pointer_read", lowerFixnum = 1)
     public abstract static class StringPointerReadNode extends PrimitiveArrayArgumentsNode {
 
-        @Specialization(guards = "isRubyString(string)")
-        protected Object read(DynamicObject string, int index,
+        @Specialization
+        protected Object read(RubyString string, int index,
                 @Cached ConditionProfile nativeRopeProfile,
                 @Cached ConditionProfile inBoundsProfile,
                 @Cached RopeNodes.GetByteNode getByteNode) {
-            final Rope rope = rope(string);
+            final Rope rope = string.rope;
 
             if (nativeRopeProfile.profile(rope instanceof NativeRope) ||
                     inBoundsProfile.profile(index < rope.byteLength())) {
@@ -1101,11 +1071,11 @@ public class CExtNodes {
     @Primitive(name = "string_pointer_write", lowerFixnum = { 1, 2 })
     public abstract static class StringPointerWriteNode extends PrimitiveArrayArgumentsNode {
 
-        @Specialization(guards = "isRubyString(string)")
-        protected int write(DynamicObject string, int index, int value,
+        @Specialization
+        protected int write(RubyString string, int index, int value,
                 @Cached ConditionProfile newRopeProfile,
                 @Cached RopeNodes.SetByteNode setByteNode) {
-            final Rope rope = rope(string);
+            final Rope rope = string.rope;
 
             final Rope newRope = setByteNode.executeSetByte(rope, index, value);
             if (newRopeProfile.profile(newRope != rope)) {
@@ -1120,18 +1090,18 @@ public class CExtNodes {
     @CoreMethod(names = "rb_class_new", onSingleton = true, required = 1)
     public abstract static class ClassNewNode extends CoreMethodArrayArgumentsNode {
 
-        @Child private CallDispatchHeadNode allocateNode;
+        @Child private DispatchNode allocateNode;
         @Child private InitializeClassNode initializeClassNode;
 
         @Specialization
-        protected DynamicObject classNew(DynamicObject superclass) {
+        protected RubyClass classNew(RubyClass superclass) {
             if (allocateNode == null) {
                 CompilerDirectives.transferToInterpreterAndInvalidate();
-                allocateNode = insert(CallDispatchHeadNode.createPrivate());
+                allocateNode = insert(DispatchNode.create());
                 initializeClassNode = insert(InitializeClassNodeGen.create(false));
             }
 
-            DynamicObject klass = (DynamicObject) allocateNode
+            RubyClass klass = (RubyClass) allocateNode
                     .call(getContext().getCoreLibrary().classClass, "__allocate__");
             return initializeClassNode.executeInitialize(klass, superclass, NotProvided.INSTANCE);
         }
@@ -1141,7 +1111,7 @@ public class CExtNodes {
     @CoreMethod(names = "rb_tr_debug", onSingleton = true, rest = true)
     public abstract static class DebugNode extends CoreMethodArrayArgumentsNode {
 
-        @Child CallDispatchHeadNode toSCall;
+        @Child DispatchNode toSCall;
 
         @TruffleBoundary
         @Specialization
@@ -1154,7 +1124,7 @@ public class CExtNodes {
                 final String representation;
 
                 if (RubyGuards.isRubyString(object)) {
-                    final Rope rope = StringOperations.rope((DynamicObject) object);
+                    final Rope rope = ((RubyString) object).rope;
                     final byte[] bytes = rope.getBytes();
                     final StringBuilder builder = new StringBuilder();
 
@@ -1167,7 +1137,7 @@ public class CExtNodes {
 
                     representation = RopeOperations.decodeRope(rope) + " (" + builder.toString() + ")";
                 } else if (RubyGuards.isRubyValue(object)) {
-                    representation = object.toString() + " (" + StringOperations.getString(callToS(object)) + ")";
+                    representation = object.toString() + " (" + callToS(object).getJavaString() + ")";
                 } else {
                     representation = object.toString();
                 }
@@ -1177,13 +1147,13 @@ public class CExtNodes {
             return nil;
         }
 
-        private DynamicObject callToS(Object object) {
+        private RubyString callToS(Object object) {
             if (toSCall == null) {
                 CompilerDirectives.transferToInterpreterAndInvalidate();
-                toSCall = insert(CallDispatchHeadNode.createPrivate());
+                toSCall = insert(DispatchNode.create());
             }
 
-            return (DynamicObject) toSCall.call(object, "to_s");
+            return (RubyString) toSCall.call(object, "to_s");
         }
 
     }
@@ -1192,7 +1162,7 @@ public class CExtNodes {
     public abstract static class CaptureExceptionNode extends YieldingCoreMethodNode {
 
         @Specialization
-        protected Object executeWithProtect(DynamicObject block,
+        protected Object executeWithProtect(RubyProc block,
                 @Cached BranchProfile exceptionProfile,
                 @Cached BranchProfile noExceptionProfile) {
             try {
@@ -1209,6 +1179,7 @@ public class CExtNodes {
     @CoreMethod(names = "raise_exception", onSingleton = true, required = 1)
     public abstract static class RaiseExceptionNode extends CoreMethodArrayArgumentsNode {
 
+        /** Profiled version of {@link ExceptionOperations#rethrow(Throwable)} */
         @Specialization
         protected Object executeThrow(CapturedException captured,
                 @Cached ConditionProfile runtimeExceptionProfile,
@@ -1219,7 +1190,7 @@ public class CExtNodes {
             } else if (errorProfile.profile(e instanceof Error)) {
                 throw (Error) e;
             } else {
-                throw new JavaException(e);
+                throw CompilerDirectives.shouldNotReachHere("Checked Java Throwable rethrown", e);
             }
         }
     }
@@ -1267,40 +1238,29 @@ public class CExtNodes {
     @CoreMethod(names = "rb_tr_enc_mbc_case_fold", onSingleton = true, required = 5, lowerFixnum = 2)
     public abstract static class RbTrMbcCaseFoldNode extends CoreMethodArrayArgumentsNode {
 
-        @Specialization(guards = { "isRubyString(string)", "isRubyEncoding(enc)" }, limit = "getCacheLimit()")
-        protected Object rbTrEncMbcCaseFold(
-                DynamicObject enc,
-                int flags,
-                DynamicObject string,
-                Object write_p,
-                Object p,
+        @Specialization(limit = "getCacheLimit()")
+        protected Object rbTrEncMbcCaseFold(RubyEncoding enc, int flags, RubyString string, Object write_p, Object p,
                 @CachedLibrary("write_p") InteropLibrary receivers,
-                @Cached BranchProfile exceptionProfile) {
-            final byte[] bytes = StringOperations.rope(string).getBytes();
+                @Cached AllocateHelperNode allocateNode,
+                @Cached TranslateInteropExceptionNode translateInteropExceptionNode,
+                @CachedLanguage RubyLanguage language) {
+            final byte[] bytes = string.rope.getBytes();
             final byte[] to = new byte[bytes.length];
             final IntHolder intHolder = new IntHolder();
             intHolder.value = 0;
-            final int resultLength = EncodingOperations
-                    .getEncoding(enc)
+            final int resultLength = enc.encoding
                     .mbcCaseFold(flags, bytes, intHolder, bytes.length, to);
-            execute(write_p, new Object[]{ p, intHolder.value }, receivers, exceptionProfile);
+            InteropNodes.execute(write_p, new Object[]{ p, intHolder.value }, receivers, translateInteropExceptionNode);
             final byte[] result = new byte[resultLength];
             if (resultLength > 0) {
                 System.arraycopy(to, 0, result, 0, resultLength);
             }
             return StringOperations.createString(
+                    language,
                     getContext(),
+                    allocateNode,
+                    this,
                     RopeOperations.create(result, USASCIIEncoding.INSTANCE, CodeRange.CR_UNKNOWN));
-        }
-
-        private void execute(Object receiver, Object[] args, InteropLibrary receivers,
-                BranchProfile exceptionProfile) {
-            try {
-                receivers.execute(receiver, args);
-            } catch (UnsupportedTypeException | ArityException | UnsupportedMessageException e) {
-                exceptionProfile.enter();
-                throw new JavaException(e);
-            }
         }
 
         protected int getCacheLimit() {
@@ -1312,9 +1272,11 @@ public class CExtNodes {
     @CoreMethod(names = "rb_tr_code_to_mbc", onSingleton = true, required = 2, lowerFixnum = 2)
     public abstract static class RbTrMbcPutNode extends CoreMethodArrayArgumentsNode {
 
-        @Specialization(guards = "isRubyEncoding(enc)")
-        protected Object rbTrEncMbcPut(DynamicObject enc, int code) {
-            final Encoding encoding = EncodingOperations.getEncoding(enc);
+        @Specialization
+        protected Object rbTrEncMbcPut(RubyEncoding enc, int code,
+                @Cached AllocateHelperNode allocateNode,
+                @CachedLanguage RubyLanguage language) {
+            final Encoding encoding = enc.encoding;
             final byte buf[] = new byte[org.jcodings.Config.ENC_CODE_TO_MBC_MAXLEN];
             final int resultLength = encoding.codeToMbc(code, buf, 0);
             final byte result[] = new byte[resultLength];
@@ -1322,7 +1284,10 @@ public class CExtNodes {
                 System.arraycopy(buf, 0, result, 0, resultLength);
             }
             return StringOperations.createString(
+                    language,
                     getContext(),
+                    allocateNode,
+                    this,
                     RopeOperations.create(result, USASCIIEncoding.INSTANCE, CodeRange.CR_UNKNOWN));
         }
 
@@ -1331,9 +1296,9 @@ public class CExtNodes {
     @CoreMethod(names = "rb_enc_mbmaxlen", onSingleton = true, required = 1)
     public abstract static class RbEncMaxLenNode extends CoreMethodArrayArgumentsNode {
 
-        @Specialization(guards = "isRubyEncoding(value)")
-        protected Object rbEncMaxLen(DynamicObject value) {
-            return EncodingOperations.getEncoding(value).maxLength();
+        @Specialization
+        protected Object rbEncMaxLen(RubyEncoding value) {
+            return value.encoding.maxLength();
         }
 
     }
@@ -1341,9 +1306,9 @@ public class CExtNodes {
     @CoreMethod(names = "rb_enc_mbminlen", onSingleton = true, required = 1)
     public abstract static class RbEncMinLenNode extends CoreMethodArrayArgumentsNode {
 
-        @Specialization(guards = "isRubyEncoding(value)")
-        protected Object rbEncMinLen(DynamicObject value) {
-            return EncodingOperations.getEncoding(value).minLength();
+        @Specialization
+        protected Object rbEncMinLen(RubyEncoding value) {
+            return value.encoding.minLength();
         }
 
     }
@@ -1351,12 +1316,12 @@ public class CExtNodes {
     @CoreMethod(names = "rb_enc_mbclen", onSingleton = true, required = 4, lowerFixnum = { 3, 4 })
     public abstract static class RbEncMbLenNode extends CoreMethodArrayArgumentsNode {
 
-        @Specialization(guards = { "isRubyEncoding(enc)", "isRubyString(str)" })
-        protected Object rbEncMbLen(DynamicObject enc, DynamicObject str, int p, int e,
+        @Specialization
+        protected Object rbEncMbLen(RubyEncoding enc, RubyString str, int p, int e,
                 @Cached RopeNodes.CodeRangeNode codeRangeNode,
                 @Cached ConditionProfile sameEncodingProfile) {
-            final Encoding encoding = EncodingOperations.getEncoding(enc);
-            final Rope rope = StringOperations.rope(str);
+            final Encoding encoding = enc.encoding;
+            final Rope rope = str.rope;
             final Encoding ropeEncoding = rope.getEncoding();
 
             return StringSupport.characterLength(
@@ -1364,7 +1329,7 @@ public class CExtNodes {
                     sameEncodingProfile.profile(encoding == ropeEncoding)
                             ? codeRangeNode.execute(rope)
                             : CodeRange.CR_UNKNOWN,
-                    StringOperations.rope(str).getBytes(),
+                    str.rope.getBytes(),
                     p,
                     e,
                     true);
@@ -1376,10 +1341,10 @@ public class CExtNodes {
     public abstract static class RbEncLeftCharHeadNode extends CoreMethodArrayArgumentsNode {
 
         @TruffleBoundary
-        @Specialization(guards = { "isRubyEncoding(enc)", "isRubyString(str)" })
-        protected Object rbEncLeftCharHead(DynamicObject enc, DynamicObject str, int start, int p, int end) {
-            return EncodingOperations.getEncoding(enc).leftAdjustCharHead(
-                    StringOperations.rope(str).getBytes(),
+        @Specialization
+        protected Object rbEncLeftCharHead(RubyEncoding enc, RubyString str, int start, int p, int end) {
+            return enc.encoding.leftAdjustCharHead(
+                    str.rope.getBytes(),
                     start,
                     p,
                     end);
@@ -1390,10 +1355,10 @@ public class CExtNodes {
     @CoreMethod(names = "rb_enc_mbc_to_codepoint", onSingleton = true, required = 3, lowerFixnum = 3)
     public abstract static class RbEncMbcToCodepointNode extends CoreMethodArrayArgumentsNode {
 
-        @Specialization(guards = { "isRubyEncoding(enc)", "isRubyString(str)" })
-        protected int rbEncMbcToCodepoint(DynamicObject enc, DynamicObject str, int end) {
-            final Rope rope = StringOperations.rope(str);
-            return EncodingOperations.getEncoding(enc).mbcToCode(rope.getBytes(), 0, end);
+        @Specialization
+        protected int rbEncMbcToCodepoint(RubyEncoding enc, RubyString str, int end) {
+            final Rope rope = str.rope;
+            return enc.encoding.mbcToCode(rope.getBytes(), 0, end);
         }
 
     }
@@ -1403,12 +1368,12 @@ public class CExtNodes {
 
         @Child private RopeNodes.CodeRangeNode codeRangeNode;
 
-        @Specialization(guards = { "isRubyEncoding(enc)", "isRubyString(str)" })
-        protected int rbEncPreciseMbclen(DynamicObject enc, DynamicObject str, int p, int end,
+        @Specialization
+        protected int rbEncPreciseMbclen(RubyEncoding enc, RubyString str, int p, int end,
                 @Cached RopeNodes.CalculateCharacterLengthNode calculateCharacterLengthNode,
                 @Cached ConditionProfile sameEncodingProfile) {
-            final Encoding encoding = EncodingOperations.getEncoding(enc);
-            final Rope rope = StringOperations.rope(str);
+            final Encoding encoding = enc.encoding;
+            final Rope rope = str.rope;
             final CodeRange cr;
             if (sameEncodingProfile.profile(encoding == rope.getEncoding())) {
                 cr = codeRange(rope);
@@ -1468,11 +1433,11 @@ public class CExtNodes {
     @CoreMethod(names = "create_mark_list", onSingleton = true, required = 1)
     public abstract static class NewMarkerList extends CoreMethodArrayArgumentsNode {
 
-        @Specialization
-        protected Object createNewMarkList(DynamicObject obj,
-                @Cached ReadObjectFieldNode readMarkedNode) {
+        @Specialization(limit = "getDynamicObjectCacheLimit()")
+        protected Object createNewMarkList(RubyDynamicObject object,
+                @CachedLibrary("object") DynamicObjectLibrary objectLibrary) {
             getContext().getMarkingService().startMarking(
-                    (Object[]) readMarkedNode.execute(obj, Layouts.MARKED_OBJECTS_IDENTIFIER, null));
+                    (Object[]) objectLibrary.getOrDefault(object, Layouts.MARKED_OBJECTS_IDENTIFIER, null));
             return nil;
         }
     }
@@ -1519,9 +1484,9 @@ public class CExtNodes {
     public abstract static class SetMarkList extends CoreMethodArrayArgumentsNode {
 
         @Specialization
-        protected Object setMarkList(DynamicObject structOwner,
+        protected Object setMarkList(RubyDynamicObject structOwner,
                 @Cached WriteObjectFieldNode writeMarkedNode) {
-            writeMarkedNode.write(
+            writeMarkedNode.execute(
                     structOwner,
                     Layouts.MARKED_OBJECTS_IDENTIFIER,
                     getContext().getMarkingService().finishMarking());
@@ -1532,38 +1497,26 @@ public class CExtNodes {
     @CoreMethod(names = "define_marker", onSingleton = true, required = 2)
     public abstract static class CreateMarkerNode extends CoreMethodArrayArgumentsNode {
 
-        @Child private DoesRespondDispatchHeadNode respondToCallNode = DoesRespondDispatchHeadNode.getUncached();
-
-        @Specialization
-        protected Object createMarker(VirtualFrame frame, DynamicObject object, DynamicObject marker,
-                @Cached BranchProfile errorProfile) {
-            if (respondToCallNode.doesRespondTo(frame, "call", marker)) {
-                addObjectToMarkingService(object, marker);
-                return nil;
-            } else {
-                errorProfile.enter();
-                throw new RaiseException(
-                        getContext(),
-                        coreExceptions().argumentErrorWrongArgumentType(marker, "callable", this));
-            }
-        }
-
         @TruffleBoundary
-        protected void addObjectToMarkingService(DynamicObject object, DynamicObject marker) {
-            RubyContext capturedContext = getContext();
+        @Specialization
+        protected Object createMarker(RubyDynamicObject object, RubyProc marker) {
             /* The code here has to be a little subtle. The marker must be associated with the object it will act on,
              * but the lambda must not capture the object (and prevent garbage collection). So the marking function is a
              * lambda that will take the object as an argument 'o' which will be provided when the marking function is
              * called by the marking service. */
-            getContext().getMarkingService().addMarker(object, (o) -> capturedContext.send(marker, "call", o));
+            getContext()
+                    .getMarkingService()
+                    .addMarker(object, (o) -> YieldNode.getUncached().executeDispatch(marker, o));
+            return nil;
         }
+
     }
 
     @CoreMethod(names = "push_extension_call_frame", onSingleton = true, required = 1)
     public abstract static class PushPreservingFrame extends CoreMethodArrayArgumentsNode {
 
         @Specialization
-        protected Object pushFrame(DynamicObject block,
+        protected Object pushFrame(RubyProc block,
                 @Cached MarkingServiceNodes.GetMarkerThreadLocalDataNode getDataNode) {
             getDataNode.execute().getExtensionCallStack().push(block);
             return nil;
@@ -1640,8 +1593,8 @@ public class CExtNodes {
     public abstract static class RbCheckSymbolCStrNode extends CoreMethodArrayArgumentsNode {
 
         @Specialization
-        protected Object checkSymbolCStr(DynamicObject str) {
-            final RubySymbol sym = getContext().getSymbolTable().getSymbolIfExists(rope(str));
+        protected Object checkSymbolCStr(RubyString str) {
+            final RubySymbol sym = getContext().getSymbolTable().getSymbolIfExists(str.rope);
             return sym == null ? nil : sym;
         }
 

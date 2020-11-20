@@ -12,10 +12,9 @@ package org.truffleruby.core.array;
 import static org.truffleruby.core.array.ArrayHelpers.setSize;
 import static org.truffleruby.core.array.ArrayHelpers.setStoreAndSize;
 
-import org.truffleruby.Layouts;
 import org.truffleruby.core.array.library.ArrayStoreLibrary;
-import org.truffleruby.language.RubyNode;
 import org.truffleruby.language.RubyContextSourceNode;
+import org.truffleruby.language.RubyNode;
 import org.truffleruby.language.objects.shared.PropagateSharingNode;
 
 import com.oracle.truffle.api.dsl.Cached;
@@ -23,7 +22,6 @@ import com.oracle.truffle.api.dsl.ImportStatic;
 import com.oracle.truffle.api.dsl.NodeChild;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.library.CachedLibrary;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.ConditionProfile;
 
 @NodeChild(value = "array", type = RubyNode.class)
@@ -37,18 +35,18 @@ public abstract class ArrayAppendOneNode extends RubyContextSourceNode {
         return ArrayAppendOneNodeGen.create(null, null);
     }
 
-    public abstract DynamicObject executeAppendOne(DynamicObject array, Object value);
+    public abstract RubyArray executeAppendOne(RubyArray array, Object value);
 
     // Append of the correct type
 
     @Specialization(
-            guards = { "stores.acceptsValue(getStore(array), value)" },
+            guards = { "stores.acceptsValue(array.store, value)" },
             limit = "storageStrategyLimit()")
-    protected DynamicObject appendOneSameType(DynamicObject array, Object value,
-            @CachedLibrary("getStore(array)") ArrayStoreLibrary stores,
+    protected RubyArray appendOneSameType(RubyArray array, Object value,
+            @CachedLibrary("array.store") ArrayStoreLibrary stores,
             @Cached("createCountingProfile()") ConditionProfile extendProfile) {
-        final Object store = Layouts.ARRAY.getStore(array);
-        final int oldSize = Layouts.ARRAY.getSize(array);
+        final Object store = array.store;
+        final int oldSize = array.size;
         final int newSize = oldSize + 1;
         final int length = stores.capacity(store);
 
@@ -69,14 +67,14 @@ public abstract class ArrayAppendOneNode extends RubyContextSourceNode {
     // Append forcing a generalization
 
     @Specialization(
-            guards = "!currentStores.acceptsValue(getStore(array), value)",
+            guards = "!currentStores.acceptsValue(array.store, value)",
             limit = "storageStrategyLimit()")
-    protected DynamicObject appendOneGeneralizeNonMutable(DynamicObject array, Object value,
-            @CachedLibrary("getStore(array)") ArrayStoreLibrary currentStores,
+    protected RubyArray appendOneGeneralizeNonMutable(RubyArray array, Object value,
+            @CachedLibrary("array.store") ArrayStoreLibrary currentStores,
             @CachedLibrary(limit = "storageStrategyLimit()") ArrayStoreLibrary newStores) {
-        final int oldSize = Layouts.ARRAY.getSize(array);
+        final int oldSize = array.size;
         final int newSize = oldSize + 1;
-        final Object currentStore = Layouts.ARRAY.getStore(array);
+        final Object currentStore = array.store;
         final int oldCapacity = currentStores.capacity(currentStore);
         final int newCapacity = newSize > oldCapacity
                 ? ArrayUtils.capacityForOneMore(getContext(), oldCapacity)

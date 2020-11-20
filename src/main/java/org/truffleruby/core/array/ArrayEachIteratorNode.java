@@ -9,8 +9,8 @@
  */
 package org.truffleruby.core.array;
 
-import org.truffleruby.Layouts;
 import org.truffleruby.core.array.library.ArrayStoreLibrary;
+import org.truffleruby.core.proc.RubyProc;
 import org.truffleruby.language.RubyContextNode;
 
 import com.oracle.truffle.api.CompilerDirectives;
@@ -21,15 +21,15 @@ import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.library.CachedLibrary;
 import com.oracle.truffle.api.nodes.LoopNode;
 import com.oracle.truffle.api.nodes.NodeInterface;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.ConditionProfile;
+import com.oracle.truffle.api.profiles.LoopConditionProfile;
 
 @ImportStatic(ArrayGuards.class)
 @ReportPolymorphism
 public abstract class ArrayEachIteratorNode extends RubyContextNode {
 
-    public static interface ArrayElementConsumerNode extends NodeInterface {
-        public abstract void accept(DynamicObject array, DynamicObject block, Object element, int index);
+    public interface ArrayElementConsumerNode extends NodeInterface {
+        void accept(RubyArray array, RubyProc block, Object element, int index);
     }
 
     @Child private ArrayEachIteratorNode recurseNode;
@@ -38,23 +38,19 @@ public abstract class ArrayEachIteratorNode extends RubyContextNode {
         return ArrayEachIteratorNodeGen.create();
     }
 
-    public abstract DynamicObject execute(DynamicObject array, DynamicObject block, int startAt,
+    public abstract RubyArray execute(RubyArray array, RubyProc block, int startAt,
             ArrayElementConsumerNode consumerNode);
 
     @Specialization(
-            guards = { "getSize(array) == 1", "startAt == 0" },
+            guards = { "array.size == 1", "startAt == 0" },
             limit = "storageStrategyLimit()")
-    protected DynamicObject iterateOne(
-            DynamicObject array,
-            DynamicObject block,
-            int startAt,
-            ArrayElementConsumerNode consumerNode,
-            @CachedLibrary("getStore(array)") ArrayStoreLibrary arrays) {
-        final Object store = Layouts.ARRAY.getStore(array);
+    protected RubyArray iterateOne(RubyArray array, RubyProc block, int startAt, ArrayElementConsumerNode consumerNode,
+            @CachedLibrary("array.store") ArrayStoreLibrary arrays) {
+        final Object store = array.store;
 
         consumerNode.accept(array, block, arrays.read(store, 0), 0);
 
-        if (Layouts.ARRAY.getSize(array) > 1) {
+        if (array.size > 1) {
             // Implicitly profiles through lazy node creation
             return getRecurseNode().execute(array, block, 1, consumerNode);
         }
@@ -63,29 +59,25 @@ public abstract class ArrayEachIteratorNode extends RubyContextNode {
     }
 
     @Specialization(
-            guards = { "getSize(array) != 1" },
+            guards = { "array.size != 1" },
             limit = "storageStrategyLimit()")
-    protected DynamicObject iterateMany(
-            DynamicObject array,
-            DynamicObject block,
-            int startAt,
-            ArrayElementConsumerNode consumerNode,
-            @CachedLibrary("getStore(array)") ArrayStoreLibrary arrays,
+    protected RubyArray iterateMany(RubyArray array, RubyProc block, int startAt, ArrayElementConsumerNode consumerNode,
+            @CachedLibrary("array.store") ArrayStoreLibrary arrays,
+            @Cached("createCountingProfile()") LoopConditionProfile loopProfile,
             @Cached ConditionProfile strategyMatchProfile) {
         int i = startAt;
+        loopProfile.profileCounted(array.size - startAt);
         try {
-            for (; i < Layouts.ARRAY.getSize(array); i++) {
-                if (strategyMatchProfile.profile(arrays.accepts(Layouts.ARRAY.getStore(array)))) {
-                    final Object store = Layouts.ARRAY.getStore(array);
+            for (; loopProfile.inject(i < array.size); i++) {
+                if (strategyMatchProfile.profile(arrays.accepts(array.store))) {
+                    final Object store = array.store;
                     consumerNode.accept(array, block, arrays.read(store, i), i);
                 } else {
                     return getRecurseNode().execute(array, block, i, consumerNode);
                 }
             }
         } finally {
-            if (CompilerDirectives.inInterpreter()) {
-                LoopNode.reportLoopCount(this, i - startAt);
-            }
+            LoopNode.reportLoopCount(this, i - startAt);
         }
 
         return array;

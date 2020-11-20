@@ -47,7 +47,7 @@ public class RubyInlineParsingRequestNode extends ExecutableNode {
         // We use the current frame as the lexical scope to parse, but then we may run with a new frame in the future
 
         final RubyRootNode rootNode = translator.parse(
-                new RubySource(source, RubyContext.getPath(source)),
+                new RubySource(source, context.getSourcePath(source)),
                 ParserContext.INLINE,
                 null,
                 currentFrame,
@@ -79,6 +79,7 @@ public class RubyInlineParsingRequestNode extends ExecutableNode {
         // We run the Ruby code as if it was written in a block
         final Object[] arguments = RubyArguments.pack(
                 frame.materialize(),
+                null,
                 null,
                 method,
                 null,

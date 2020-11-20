@@ -10,9 +10,11 @@
 package org.truffleruby.core.cast;
 
 import org.truffleruby.RubyLanguage;
+import org.truffleruby.core.numeric.RubyBignum;
 import org.truffleruby.core.symbol.RubySymbol;
 import org.truffleruby.language.Nil;
 import org.truffleruby.language.RubyBaseNode;
+import org.truffleruby.language.RubyDynamicObject;
 import org.truffleruby.language.RubyNode;
 
 import com.oracle.truffle.api.dsl.Cached;
@@ -23,7 +25,6 @@ import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.interop.InteropLibrary;
 import com.oracle.truffle.api.interop.UnsupportedMessageException;
 import com.oracle.truffle.api.library.CachedLibrary;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.BranchProfile;
 import com.oracle.truffle.api.profiles.ConditionProfile;
 
@@ -68,7 +69,7 @@ public abstract class BooleanCastNode extends RubyBaseNode {
     }
 
     @Specialization
-    protected boolean doBasicObject(DynamicObject object) {
+    protected boolean doBasicObject(RubyDynamicObject object) {
         return true;
     }
 
@@ -77,21 +78,32 @@ public abstract class BooleanCastNode extends RubyBaseNode {
         return true;
     }
 
+    @Specialization
+    protected boolean doBignum(RubyBignum object) {
+        return true;
+    }
+
     @Specialization(guards = "isForeignObject(object)", limit = "getCacheLimit()")
     protected boolean doForeignObject(Object object,
             @CachedLibrary("object") InteropLibrary objects,
-            @Cached ConditionProfile profile,
+            @Cached ConditionProfile isNullProfile,
+            @Cached ConditionProfile isBooleanProfile,
             @Cached BranchProfile failed) {
-        if (profile.profile(objects.isBoolean(object))) {
-            try {
-                return objects.asBoolean(object);
-            } catch (UnsupportedMessageException e) {
-                failed.enter();
-                // it concurrently stopped being boolean
+
+        if (isNullProfile.profile(objects.isNull(object))) {
+            return false;
+        } else {
+            if (isBooleanProfile.profile(objects.isBoolean(object))) {
+                try {
+                    return objects.asBoolean(object);
+                } catch (UnsupportedMessageException e) {
+                    failed.enter();
+                    // it concurrently stopped being boolean
+                    return true;
+                }
+            } else {
                 return true;
             }
-        } else {
-            return true;
         }
     }
 

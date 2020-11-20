@@ -10,15 +10,16 @@
 package org.truffleruby.platform;
 
 import org.truffleruby.RubyContext;
-import org.truffleruby.core.string.StringOperations;
-import org.truffleruby.language.control.JavaException;
+import org.truffleruby.core.string.RubyString;
+import org.truffleruby.interop.InteropNodes;
+import org.truffleruby.interop.TranslateInteropExceptionNode;
 
+import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.interop.ArityException;
 import com.oracle.truffle.api.interop.InteropLibrary;
 import com.oracle.truffle.api.interop.UnknownIdentifierException;
 import com.oracle.truffle.api.interop.UnsupportedMessageException;
 import com.oracle.truffle.api.interop.UnsupportedTypeException;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.source.Source;
 
 public class TruffleNFIPlatform {
@@ -48,7 +49,7 @@ public class TruffleNFIPlatform {
         try {
             return InteropLibrary.getFactory().getUncached(library).readMember(library, name);
         } catch (UnknownIdentifierException | UnsupportedMessageException e) {
-            throw new JavaException(e);
+            throw TranslateInteropExceptionNode.getUncached().execute(e);
         }
     }
 
@@ -57,7 +58,7 @@ public class TruffleNFIPlatform {
             return InteropLibrary.getFactory().getUncached(receiver).invokeMember(receiver, identifier, args);
         } catch (UnsupportedMessageException | UnsupportedTypeException | ArityException
                 | UnknownIdentifierException e) {
-            throw new JavaException(e);
+            throw TranslateInteropExceptionNode.getUncached().execute(e);
         }
     }
 
@@ -69,21 +70,21 @@ public class TruffleNFIPlatform {
         try {
             return InteropLibrary.getFactory().getUncached(object).asPointer(object);
         } catch (UnsupportedMessageException e) {
-            throw new JavaException(e);
+            throw TranslateInteropExceptionNode.getUncached().execute(e);
         }
     }
 
     public Object resolveTypeRaw(NativeConfiguration nativeConfiguration, String type) {
         final Object typedef = nativeConfiguration.get("platform.typedef." + type);
         if (typedef == null) {
-            throw new UnsupportedOperationException("Type " + type + " is not defined in the native configuration");
+            throw CompilerDirectives.shouldNotReachHere("Type " + type + " is not defined in the native configuration");
         }
         return typedef;
     }
 
     public String resolveType(NativeConfiguration nativeConfiguration, String type) {
         final Object typedef = resolveTypeRaw(nativeConfiguration, type);
-        return toNFIType(StringOperations.getString((DynamicObject) typedef));
+        return toNFIType(((RubyString) typedef).getJavaString());
     }
 
     private String toNFIType(String type) {
@@ -126,11 +127,8 @@ public class TruffleNFIPlatform {
         }
 
         public Object call(Object... arguments) {
-            try {
-                return functionInteropLibrary.execute(function, arguments);
-            } catch (UnsupportedMessageException | UnsupportedTypeException | ArityException e) {
-                throw new JavaException(e);
-            }
+            return InteropNodes
+                    .execute(function, arguments, functionInteropLibrary, TranslateInteropExceptionNode.getUncached());
         }
 
     }

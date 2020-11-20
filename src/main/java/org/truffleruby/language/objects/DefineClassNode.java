@@ -9,17 +9,16 @@
  */
 package org.truffleruby.language.objects;
 
-import org.truffleruby.Layouts;
 import org.truffleruby.core.klass.ClassNodes;
+import org.truffleruby.core.klass.RubyClass;
+import org.truffleruby.core.module.RubyModule;
 import org.truffleruby.language.RubyContextSourceNode;
-import org.truffleruby.language.RubyGuards;
 import org.truffleruby.language.RubyNode;
 import org.truffleruby.language.control.RaiseException;
-import org.truffleruby.language.dispatch.CallDispatchHeadNode;
+import org.truffleruby.language.dispatch.DispatchNode;
 
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.frame.VirtualFrame;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.BranchProfile;
 import com.oracle.truffle.api.profiles.ConditionProfile;
 
@@ -30,7 +29,7 @@ public class DefineClassNode extends RubyContextSourceNode {
     @Child private RubyNode superClassNode;
     @Child private RubyNode lexicalParentModule;
     @Child private LookupForExistingModuleNode lookupForExistingModuleNode;
-    @Child private CallDispatchHeadNode inheritedNode;
+    @Child private DispatchNode inheritedNode;
 
     private final ConditionProfile needToDefineProfile = ConditionProfile.create();
     private final ConditionProfile noSuperClassSupplied = ConditionProfile.create();
@@ -49,21 +48,21 @@ public class DefineClassNode extends RubyContextSourceNode {
     public Object execute(VirtualFrame frame) {
         final Object lexicalParentObject = lexicalParentModule.execute(frame);
 
-        if (!RubyGuards.isRubyModule(lexicalParentObject)) {
+        if (!(lexicalParentObject instanceof RubyModule)) {
             errorProfile.enter();
             throw new RaiseException(
                     getContext(),
                     coreExceptions().typeErrorIsNotA(lexicalParentObject, "module", this));
         }
 
-        final DynamicObject lexicalParentModule = (DynamicObject) lexicalParentObject;
-        final DynamicObject suppliedSuperClass = executeSuperClass(frame);
+        final RubyModule lexicalParentModule = (RubyModule) lexicalParentObject;
+        final RubyClass suppliedSuperClass = executeSuperClass(frame);
         final Object existing = lookupForExistingModule(frame, name, lexicalParentModule);
 
-        final DynamicObject definedClass;
+        final RubyClass definedClass;
 
         if (needToDefineProfile.profile(existing == null)) {
-            final DynamicObject superClass;
+            final RubyClass superClass;
             if (noSuperClassSupplied.profile(suppliedSuperClass == null)) {
                 superClass = getContext().getCoreLibrary().objectClass;
             } else {
@@ -77,19 +76,19 @@ public class DefineClassNode extends RubyContextSourceNode {
                     name);
             callInherited(frame, superClass, definedClass);
         } else {
-            if (!RubyGuards.isRubyClass(existing)) {
+            if (!(existing instanceof RubyClass)) {
                 errorProfile.enter();
                 throw new RaiseException(getContext(), coreExceptions().typeErrorIsNotA(existing, "class", this));
             }
 
-            definedClass = (DynamicObject) existing;
+            definedClass = (RubyClass) existing;
 
-            final DynamicObject currentSuperClass = ClassNodes.getSuperClass(definedClass);
+            final RubyClass currentSuperClass = ClassNodes.getSuperClass(definedClass);
 
             if (suppliedSuperClass != null && currentSuperClass != suppliedSuperClass) { // bug-compat with MRI https://bugs.ruby-lang.org/issues/12367
                 errorProfile.enter();
                 throw new RaiseException(getContext(), coreExceptions().superclassMismatch(
-                        Layouts.MODULE.getFields(definedClass).getName(),
+                        definedClass.fields.getName(),
                         this));
             }
         }
@@ -97,20 +96,20 @@ public class DefineClassNode extends RubyContextSourceNode {
         return definedClass;
     }
 
-    private DynamicObject executeSuperClass(VirtualFrame frame) {
+    private RubyClass executeSuperClass(VirtualFrame frame) {
         if (superClassNode == null) {
             return null;
         }
         final Object superClassObject = superClassNode.execute(frame);
 
-        if (!RubyGuards.isRubyClass(superClassObject)) {
+        if (!(superClassObject instanceof RubyClass)) {
             errorProfile.enter();
             throw new RaiseException(getContext(), coreExceptions().typeError("superclass must be a Class", this));
         }
 
-        final DynamicObject superClass = (DynamicObject) superClassObject;
+        final RubyClass superClass = (RubyClass) superClassObject;
 
-        if (Layouts.CLASS.getIsSingleton(superClass)) {
+        if (superClass.isSingleton) {
             errorProfile.enter();
             throw new RaiseException(
                     getContext(),
@@ -120,15 +119,15 @@ public class DefineClassNode extends RubyContextSourceNode {
         return superClass;
     }
 
-    private void callInherited(VirtualFrame frame, DynamicObject superClass, DynamicObject childClass) {
+    private void callInherited(VirtualFrame frame, RubyClass superClass, RubyClass childClass) {
         if (inheritedNode == null) {
             CompilerDirectives.transferToInterpreterAndInvalidate();
-            inheritedNode = insert(CallDispatchHeadNode.createPrivate());
+            inheritedNode = insert(DispatchNode.create());
         }
         inheritedNode.call(superClass, "inherited", childClass);
     }
 
-    private Object lookupForExistingModule(VirtualFrame frame, String name, DynamicObject lexicalParent) {
+    private Object lookupForExistingModule(VirtualFrame frame, String name, RubyModule lexicalParent) {
         if (lookupForExistingModuleNode == null) {
             CompilerDirectives.transferToInterpreterAndInvalidate();
             lookupForExistingModuleNode = insert(new LookupForExistingModuleNode());

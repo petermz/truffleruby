@@ -26,7 +26,7 @@ module Truffle
 
     def self.gsub_block_set_last_match(s, pattern, &block)
       Truffle::StringOperations.gsub_internal_block(s, pattern) do |m|
-        RegexpOperations.set_last_match(m, block.binding)
+        Primitive.regexp_last_match_set(Primitive.proc_special_variables(block), m)
         yield m.to_s
       end
     end
@@ -77,7 +77,7 @@ module Truffle
         match = index ? Primitive.matchdata_create_single_group(pattern, orig.dup, index, index + pattern.bytesize) : nil
       else
         pattern = Truffle::Type.coerce_to_regexp(pattern, true) unless pattern.kind_of? Regexp
-        match = pattern.search_region(orig, 0, orig.bytesize, true)
+        match = Truffle::RegexpOperations.search_region(pattern, orig, 0, orig.bytesize, true)
       end
 
       return nil unless match
@@ -89,7 +89,7 @@ module Truffle
       while match
         offset = match.byte_begin(0)
 
-        str = match.pre_match_from(last_end)
+        str = Truffle::RegexpOperations.pre_match_from(match, last_end)
         Primitive.string_append(ret, str) if str
 
         val = yield ret, match
@@ -98,7 +98,7 @@ module Truffle
         tainted ||= val.tainted?
         Primitive.string_append(ret, val)
 
-        if match.collapsing?
+        if Truffle::RegexpOperations.collapsing?(match)
           if (char = Primitive.string_find_character(orig, offset))
             offset += char.bytesize
           else
@@ -279,13 +279,13 @@ module Truffle
     def self.byte_index(src, str, start=0)
       start += src.bytesize if start < 0
       if start < 0 or start > src.bytesize
-        Truffle::RegexpOperations.set_last_match(nil, Primitive.caller_binding) if str.kind_of? Regexp
+        Primitive.regexp_last_match_set(Primitive.caller_special_variables, nil) if str.kind_of? Regexp
         return nil
       end
 
       return start if str == ''
 
-      Truffle::Type.compatible_encoding src, str
+      Primitive.encoding_ensure_compatible src, str
 
       Primitive.string_byte_index(src, str, start)
     end

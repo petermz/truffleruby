@@ -15,25 +15,24 @@ import java.util.Arrays;
 import org.jcodings.specific.ASCIIEncoding;
 import org.jcodings.specific.USASCIIEncoding;
 import org.joni.Regex;
-import org.truffleruby.Layouts;
+import org.truffleruby.RubyLanguage;
 import org.truffleruby.core.cast.ToSNode;
 import org.truffleruby.core.regexp.InterpolatedRegexpNodeFactory.RegexpBuilderNodeGen;
 import org.truffleruby.core.rope.Rope;
 import org.truffleruby.core.rope.RopeBuilder;
 import org.truffleruby.core.rope.RopeNodes;
 import org.truffleruby.core.rope.RopeOperations;
-import org.truffleruby.core.string.StringOperations;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.language.NotOptimizedWarningNode;
 import org.truffleruby.language.RubyContextNode;
 import org.truffleruby.language.RubyContextSourceNode;
-import org.truffleruby.language.dispatch.CallDispatchHeadNode;
+import org.truffleruby.language.dispatch.DispatchNode;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.nodes.ExplodeLoop;
-import com.oracle.truffle.api.object.DynamicObject;
 
 public class InterpolatedRegexpNode extends RubyContextSourceNode {
 
@@ -55,7 +54,7 @@ public class InterpolatedRegexpNode extends RubyContextSourceNode {
         Rope[] values = new Rope[children.length];
         for (int i = 0; i < children.length; i++) {
             final Object value = children[i].execute(frame);
-            values[i] = StringOperations.rope((DynamicObject) value);
+            values[i] = ((RubyString) value).rope;
         }
         return values;
     }
@@ -63,7 +62,7 @@ public class InterpolatedRegexpNode extends RubyContextSourceNode {
     public static abstract class RegexpBuilderNode extends RubyContextNode {
 
         @Child private RopeNodes.EqualNode ropesEqualNode = RopeNodes.EqualNode.create();
-        @Child private CallDispatchHeadNode copyNode = CallDispatchHeadNode.createPrivate();
+        @Child private DispatchNode copyNode = DispatchNode.create();
         private final RegexpOptions options;
 
         public static RegexpBuilderNode create(RegexpOptions options) {
@@ -79,7 +78,7 @@ public class InterpolatedRegexpNode extends RubyContextSourceNode {
         @Specialization(guards = "ropesMatch(cachedParts, parts)", limit = "getDefaultCacheLimit()")
         protected Object executeFast(Rope[] parts,
                 @Cached(value = "parts", dimensions = 1) Rope[] cachedParts,
-                @Cached("createRegexp(cachedParts)") DynamicObject regexp) {
+                @Cached("createRegexp(cachedParts)") RubyRegexp regexp) {
             final Object clone = copyNode.call(regexp, "clone");
             return clone;
         }
@@ -102,7 +101,7 @@ public class InterpolatedRegexpNode extends RubyContextSourceNode {
         }
 
         @TruffleBoundary
-        protected DynamicObject createRegexp(Rope[] strings) {
+        protected RubyRegexp createRegexp(Rope[] strings) {
             final RegexpOptions options = (RegexpOptions) this.options.clone();
             final RopeBuilder preprocessed = ClassicRegexp.preprocessDRegexp(getContext(), strings, options);
 
@@ -112,21 +111,21 @@ public class InterpolatedRegexpNode extends RubyContextSourceNode {
             // The RegexpNodes.compile operation may modify the encoding of the source rope. This modified copy is stored
             // in the Regex object as the "user object". Since ropes are immutable, we need to take this updated copy when
             // constructing the final regexp.
-            final DynamicObject regexp = Layouts.REGEXP
-                    .createRegexp(
-                            coreLibrary().regexpFactory,
-                            regexp1,
-                            (Rope) regexp1.getUserObject(),
-                            options,
-                            new EncodingCache());
+            final RubyRegexp regexp = new RubyRegexp(
+                    coreLibrary().regexpClass,
+                    RubyLanguage.regexpShape,
+                    regexp1,
+                    (Rope) regexp1.getUserObject(),
+                    options,
+                    new EncodingCache());
 
             if (options.isEncodingNone()) {
-                final Rope source = Layouts.REGEXP.getSource(regexp);
+                final Rope source = regexp.source;
 
                 if (!all7Bit(preprocessed.getBytes())) {
-                    Layouts.REGEXP.setSource(regexp, RopeOperations.withEncoding(source, ASCIIEncoding.INSTANCE));
+                    regexp.source = RopeOperations.withEncoding(source, ASCIIEncoding.INSTANCE);
                 } else {
-                    Layouts.REGEXP.setSource(regexp, RopeOperations.withEncoding(source, USASCIIEncoding.INSTANCE));
+                    regexp.source = RopeOperations.withEncoding(source, USASCIIEncoding.INSTANCE);
                 }
             }
 

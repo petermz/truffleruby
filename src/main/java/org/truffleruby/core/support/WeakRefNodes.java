@@ -9,14 +9,16 @@
  */
 package org.truffleruby.core.support;
 
+import com.oracle.truffle.api.library.CachedLibrary;
+import com.oracle.truffle.api.object.DynamicObjectLibrary;
 import org.truffleruby.builtins.CoreModule;
 import org.truffleruby.builtins.Primitive;
 import org.truffleruby.builtins.PrimitiveArrayArgumentsNode;
-import org.truffleruby.language.objects.ReadObjectFieldNode;
+import org.truffleruby.language.RubyDynamicObject;
 import org.truffleruby.language.objects.WriteObjectFieldNode;
 
+import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.object.HiddenKey;
 import com.oracle.truffle.api.utilities.TruffleWeakReference;
 
@@ -24,17 +26,22 @@ import com.oracle.truffle.api.utilities.TruffleWeakReference;
 public abstract class WeakRefNodes {
 
     private static final TruffleWeakReference<Object> EMPTY_WEAK_REF = new TruffleWeakReference<>(null);
-    private static final HiddenKey fieldName = new HiddenKey("weak_ref");
+    private static final HiddenKey FIELD_NAME = new HiddenKey("weak_ref");
 
     @Primitive(name = "weakref_set_object")
     public static abstract class WeakRefSetObjectPrimitiveNode extends PrimitiveArrayArgumentsNode {
 
-        @Child WriteObjectFieldNode fieldNode = WriteObjectFieldNode.create();
+        @Child WriteObjectFieldNode fieldNode = WriteObjectFieldNode.create(); // for synchronization
 
         @Specialization
-        protected Object weakRefSetObject(DynamicObject weakRef, Object object) {
-            fieldNode.write(weakRef, fieldName, new TruffleWeakReference<>(object));
+        protected Object weakRefSetObject(RubyDynamicObject weakRef, Object object) {
+            fieldNode.execute(weakRef, FIELD_NAME, newTruffleWeakReference(object));
             return object;
+        }
+
+        @TruffleBoundary // GR-25356
+        private static TruffleWeakReference<Object> newTruffleWeakReference(Object object) {
+            return new TruffleWeakReference<>(object);
         }
 
     }
@@ -42,12 +49,11 @@ public abstract class WeakRefNodes {
     @Primitive(name = "weakref_object")
     public static abstract class WeakRefObjectPrimitiveNode extends PrimitiveArrayArgumentsNode {
 
-        @Child ReadObjectFieldNode fieldNode = ReadObjectFieldNode.create();
-
-        @Specialization
-        protected Object weakRefObject(DynamicObject weakRef) {
-            final TruffleWeakReference<?> ref = (TruffleWeakReference<?>) fieldNode
-                    .execute(weakRef, fieldName, EMPTY_WEAK_REF);
+        @Specialization(limit = "getDynamicObjectCacheLimit()")
+        protected Object weakRefObject(RubyDynamicObject weakRef,
+                @CachedLibrary("weakRef") DynamicObjectLibrary objectLibrary) {
+            final TruffleWeakReference<?> ref = (TruffleWeakReference<?>) objectLibrary
+                    .getOrDefault(weakRef, FIELD_NAME, EMPTY_WEAK_REF);
             final Object object = ref.get();
             return object == null ? nil : object;
         }

@@ -43,7 +43,6 @@ import java.nio.file.NoSuchFileException;
 import java.util.Set;
 import java.util.logging.Level;
 
-import com.oracle.truffle.api.CompilerDirectives;
 import org.graalvm.nativeimage.ProcessProperties;
 import org.jcodings.Encoding;
 import org.jcodings.specific.UTF8Encoding;
@@ -55,23 +54,25 @@ import org.truffleruby.builtins.CoreModule;
 import org.truffleruby.builtins.Primitive;
 import org.truffleruby.builtins.PrimitiveArrayArgumentsNode;
 import org.truffleruby.builtins.YieldingCoreMethodNode;
+import org.truffleruby.core.array.RubyArray;
+import org.truffleruby.core.proc.RubyProc;
 import org.truffleruby.core.rope.CodeRange;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.core.string.StringNodes;
-import org.truffleruby.core.string.StringOperations;
 import org.truffleruby.core.symbol.RubySymbol;
 import org.truffleruby.interop.FromJavaStringNode;
 import org.truffleruby.interop.ToJavaStringNode;
-import org.truffleruby.language.control.JavaException;
+import org.truffleruby.language.RubyDynamicObject;
 import org.truffleruby.language.control.RaiseException;
 import org.truffleruby.platform.Platform;
 import org.truffleruby.shared.BasicPlatform;
 
+import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.TruffleFile;
 import com.oracle.truffle.api.TruffleOptions;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.ConditionProfile;
 
 @CoreModule("Truffle::System")
@@ -84,7 +85,7 @@ public abstract class TruffleSystemNodes {
 
         @TruffleBoundary
         @Specialization
-        protected DynamicObject envVars() {
+        protected RubyArray envVars() {
             final Set<String> variables = System.getenv().keySet();
             final int size = variables.size();
             final Encoding localeEncoding = getContext().getEncodingManager().getLocaleEncoding();
@@ -101,8 +102,8 @@ public abstract class TruffleSystemNodes {
     @Primitive(name = "java_get_env")
     public abstract static class JavaGetEnv extends CoreMethodArrayArgumentsNode {
 
-        @Specialization(guards = "isRubyString(name)")
-        protected Object javaGetEnv(DynamicObject name,
+        @Specialization
+        protected Object javaGetEnv(RubyString name,
                 @Cached ToJavaStringNode toJavaStringNode,
                 @Cached FromJavaStringNode fromJavaStringNode,
                 @Cached ConditionProfile nullValueProfile) {
@@ -127,9 +128,9 @@ public abstract class TruffleSystemNodes {
     public abstract static class SetTruffleWorkingDirNode extends PrimitiveArrayArgumentsNode {
 
         @TruffleBoundary
-        @Specialization(guards = "isRubyString(dir)")
-        protected Object setTruffleWorkingDir(DynamicObject dir) {
-            TruffleFile truffleFile = getContext().getEnv().getPublicTruffleFile(StringOperations.getString(dir));
+        @Specialization
+        protected Object setTruffleWorkingDir(RubyString dir) {
+            TruffleFile truffleFile = getContext().getEnv().getPublicTruffleFile(dir.getJavaString());
             final TruffleFile canonicalFile;
             try {
                 canonicalFile = truffleFile.getCanonicalFile();
@@ -137,11 +138,22 @@ public abstract class TruffleSystemNodes {
                 // Let the following chdir() fail
                 return nil;
             } catch (IOException e) {
-                throw new JavaException(e);
+                throw new RaiseException(getContext(), coreExceptions().ioError(e, this));
             }
             getContext().getEnv().setCurrentWorkingDirectory(canonicalFile);
             getContext().getFeatureLoader().setWorkingDirectory(canonicalFile.getPath());
             return dir;
+        }
+    }
+
+    @Primitive(name = "working_directory")
+    public abstract static class GetTruffleWorkingDirNode extends PrimitiveArrayArgumentsNode {
+        @Specialization
+        protected RubyString getTruffleWorkingDir(
+                @Cached StringNodes.MakeStringNode makeStringNode) {
+            final String cwd = getContext().getFeatureLoader().getWorkingDirectory();
+            final Encoding externalEncoding = getContext().getEncodingManager().getDefaultExternalEncoding();
+            return makeStringNode.executeMake(cwd, externalEncoding, CodeRange.CR_UNKNOWN);
         }
     }
 
@@ -150,9 +162,9 @@ public abstract class TruffleSystemNodes {
 
         @Child private StringNodes.MakeStringNode makeStringNode = StringNodes.MakeStringNode.create();
 
-        @Specialization(guards = "isRubyString(property)")
-        protected Object getJavaProperty(DynamicObject property) {
-            String value = getProperty(StringOperations.getString(property));
+        @Specialization
+        protected Object getJavaProperty(RubyString property) {
+            String value = getProperty(property.getJavaString());
             if (value == null) {
                 return nil;
             } else {
@@ -172,7 +184,7 @@ public abstract class TruffleSystemNodes {
         @Child private StringNodes.MakeStringNode makeStringNode = StringNodes.MakeStringNode.create();
 
         @Specialization
-        protected DynamicObject hostCPU() {
+        protected RubyString hostCPU() {
             return makeStringNode.executeMake(BasicPlatform.getArchName(), UTF8Encoding.INSTANCE, CodeRange.CR_UNKNOWN);
         }
 
@@ -184,7 +196,7 @@ public abstract class TruffleSystemNodes {
         @Child private StringNodes.MakeStringNode makeStringNode = StringNodes.MakeStringNode.create();
 
         @Specialization
-        protected DynamicObject hostOS() {
+        protected RubyString hostOS() {
             return makeStringNode.executeMake(Platform.getOSName(), UTF8Encoding.INSTANCE, CodeRange.CR_7BIT);
         }
 
@@ -195,7 +207,7 @@ public abstract class TruffleSystemNodes {
 
         // We must not allow to synchronize on boxed primitives.
         @Specialization
-        protected Object synchronize(DynamicObject object, DynamicObject block) {
+        protected Object synchronize(RubyDynamicObject object, RubyProc block) {
             synchronized (object) {
                 return yield(block);
             }
@@ -205,17 +217,17 @@ public abstract class TruffleSystemNodes {
     @CoreMethod(names = "log", onSingleton = true, required = 2)
     public abstract static class LogNode extends CoreMethodArrayArgumentsNode {
 
-        @Specialization(guards = { "isRubyString(message)", "level == cachedLevel" })
-        protected Object logCached(RubySymbol level, DynamicObject message,
+        @Specialization(guards = { "level == cachedLevel" })
+        protected Object logCached(RubySymbol level, RubyString message,
                 @Cached("level") RubySymbol cachedLevel,
                 @Cached("getLevel(cachedLevel)") Level javaLevel) {
-            log(javaLevel, StringOperations.getString(message));
+            log(javaLevel, message.getJavaString());
             return nil;
         }
 
-        @Specialization(guards = { "isRubyString(message)" }, replaces = "logCached")
-        protected Object log(RubySymbol level, DynamicObject message) {
-            log(getLevel(level), StringOperations.getString(message));
+        @Specialization(replaces = "logCached")
+        protected Object log(RubySymbol level, RubyString message) {
+            log(getLevel(level), message.getJavaString());
             return nil;
         }
 
@@ -241,10 +253,10 @@ public abstract class TruffleSystemNodes {
     public abstract static class SetProcessTitleNode extends PrimitiveArrayArgumentsNode {
 
         @TruffleBoundary
-        @Specialization(guards = "isRubyString(name)")
-        protected DynamicObject setProcessTitle(DynamicObject name) {
+        @Specialization
+        protected RubyString setProcessTitle(RubyString name) {
             if (TruffleOptions.AOT) {
-                ProcessProperties.setArgumentVectorProgramName(StringOperations.getString(name));
+                ProcessProperties.setArgumentVectorProgramName(name.getJavaString());
             } else {
                 // already checked in the caller
                 throw CompilerDirectives.shouldNotReachHere();

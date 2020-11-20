@@ -10,9 +10,10 @@
 package org.truffleruby.language.arguments;
 
 import org.truffleruby.core.binding.BindingNodes;
+import org.truffleruby.core.binding.RubyBinding;
 import org.truffleruby.language.RubyContextSourceNode;
 import org.truffleruby.language.NotOptimizedWarningNode;
-import org.truffleruby.language.dispatch.CallDispatchHeadNode;
+import org.truffleruby.language.dispatch.DispatchNode;
 import org.truffleruby.language.locals.ReadFrameSlotNode;
 import org.truffleruby.language.locals.ReadFrameSlotNodeGen;
 import org.truffleruby.language.locals.WriteFrameSlotNode;
@@ -20,13 +21,12 @@ import org.truffleruby.language.locals.WriteFrameSlotNodeGen;
 
 import com.oracle.truffle.api.frame.FrameSlot;
 import com.oracle.truffle.api.frame.VirtualFrame;
-import com.oracle.truffle.api.object.DynamicObject;
 
 public class RunBlockKWArgsHelperNode extends RubyContextSourceNode {
 
     @Child private ReadFrameSlotNode readArrayNode;
     @Child private WriteFrameSlotNode writeArrayNode;
-    @Child private CallDispatchHeadNode callHelperNode;
+    @Child private DispatchNode callHelperNode;
     @Child private NotOptimizedWarningNode notOptimizedWarningNode = NotOptimizedWarningNode.create();
 
     private final Object kwrestName;
@@ -34,7 +34,7 @@ public class RunBlockKWArgsHelperNode extends RubyContextSourceNode {
     public RunBlockKWArgsHelperNode(FrameSlot arrayFrameSlot, Object kwrestName) {
         readArrayNode = ReadFrameSlotNodeGen.create(arrayFrameSlot);
         writeArrayNode = WriteFrameSlotNodeGen.create(arrayFrameSlot);
-        callHelperNode = CallDispatchHeadNode.createPrivate();
+        callHelperNode = DispatchNode.create();
         this.kwrestName = kwrestName;
     }
 
@@ -45,7 +45,7 @@ public class RunBlockKWArgsHelperNode extends RubyContextSourceNode {
 
         final Object array = readArrayNode.executeRead(frame);
 
-        final DynamicObject binding = BindingNodes.createBinding(getContext(), frame.materialize());
+        final RubyBinding binding = BindingNodes.createBinding(getContext(), frame.materialize());
         final Object remainingArray = callHelperNode.call(
                 coreLibrary().truffleInternalModule,
                 "load_arguments_from_array_kw_helper",

@@ -28,20 +28,18 @@ maintained in the [ruby-versions](https://github.com/postmodern/ruby-versions) r
 There is a handy script in the repo that does everything needed:
 
 ```bash
-$ ./update.sh truffleruby $VERSION
+./update.sh truffleruby $VERSION
+./update.sh graalvm $VERSION
 ```
-
-cc `@havenwood` in the PR description.
 
 ## ruby-build
 
 There is a script in the repo that does everything needed:
 
 ```bash
-$ script/update-truffleruby $VERSION ../ruby-versions/pkg
+script/update-truffleruby $VERSION ../ruby-versions/pkg
+script/update-truffleruby-graalvm $VERSION ../ruby-versions/pkg
 ```
-
-cc `@hsbt` in the PR description.
 
 `rbenv` users which installed `ruby-build` using Homebrew need a new release of
 `ruby-build` to try the new TruffleRuby release.
@@ -52,7 +50,7 @@ Once pushed/merged to master, it's a good idea to create a `ruby-build` release,
 so `ruby-build` Homebrew users can get the new TruffleRuby release too:
 
 ```bash
-$ script/release
+script/release
 ```
 
 See [this comment](https://github.com/rbenv/ruby-build/pull/1318#issuecomment-548399571) for details.
@@ -62,12 +60,12 @@ See [this comment](https://github.com/rbenv/ruby-build/pull/1318#issuecomment-54
 There is a script in the repo that does everything needed:
 
 ```bash
-$ ruby update-truffleruby.rb $VERSION ../ruby-versions/pkg
+ruby update-truffleruby.rb $VERSION ../ruby-versions/pkg
 ```
 
 The script must be run after running the `ruby-versions` script above.
 
-cc `@havenwood` in the PR description.
+cc `@havenwood, @pkuczynski` in the PR description.
 
 ## Conclusion
 

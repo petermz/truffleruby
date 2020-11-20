@@ -10,27 +10,28 @@
 package org.truffleruby.language.arguments;
 
 import org.truffleruby.core.array.ArrayUtils;
-import org.truffleruby.language.RubyGuards;
+import org.truffleruby.core.proc.RubyProc;
 import org.truffleruby.language.control.FrameOnStackMarker;
 import org.truffleruby.language.methods.DeclarationContext;
 import org.truffleruby.language.methods.InternalMethod;
+import org.truffleruby.language.threadlocal.SpecialVariableStorage;
 
 import com.oracle.truffle.api.frame.Frame;
 import com.oracle.truffle.api.frame.MaterializedFrame;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.nodes.ExplodeLoop;
-import com.oracle.truffle.api.object.DynamicObject;
 
 public final class RubyArguments {
 
     private enum ArgumentIndicies {
         DECLARATION_FRAME, // 0
         CALLER_FRAME, // 1
-        METHOD, // 2
-        DECLARATION_CONTEXT, // 3
-        FRAME_ON_STACK_MARKER, // 4
-        SELF, // 5
-        BLOCK // 6
+        CALLER_SPECIAL_VARIABLE_STORAGE, // 2
+        METHOD, // 3
+        DECLARATION_CONTEXT, // 4
+        FRAME_ON_STACK_MARKER, // 5
+        SELF, // 6
+        BLOCK // 7
     }
 
     private final static int RUNTIME_ARGUMENT_COUNT = ArgumentIndicies.values().length;
@@ -39,14 +40,16 @@ public final class RubyArguments {
     public static Object[] pack(
             MaterializedFrame declarationFrame,
             MaterializedFrame callerFrame,
+            SpecialVariableStorage storage,
             InternalMethod method,
             FrameOnStackMarker frameOnStackMarker,
             Object self,
-            DynamicObject block,
+            RubyProc block,
             Object[] arguments) {
         return pack(
                 declarationFrame,
                 callerFrame,
+                storage,
                 method,
                 method.getDeclarationContext(),
                 frameOnStackMarker,
@@ -58,22 +61,23 @@ public final class RubyArguments {
     public static Object[] pack(
             MaterializedFrame declarationFrame,
             MaterializedFrame callerFrame,
+            SpecialVariableStorage storage,
             InternalMethod method,
             DeclarationContext declarationContext,
             FrameOnStackMarker frameOnStackMarker,
             Object self,
-            DynamicObject block,
+            RubyProc block,
             Object[] arguments) {
         assert method != null;
         assert declarationContext != null;
         assert self != null;
-        assert block == null || RubyGuards.isRubyProc(block);
         assert arguments != null;
 
         final Object[] packed = new Object[RUNTIME_ARGUMENT_COUNT + arguments.length];
 
         packed[ArgumentIndicies.DECLARATION_FRAME.ordinal()] = declarationFrame;
         packed[ArgumentIndicies.CALLER_FRAME.ordinal()] = callerFrame;
+        packed[ArgumentIndicies.CALLER_SPECIAL_VARIABLE_STORAGE.ordinal()] = storage;
         packed[ArgumentIndicies.METHOD.ordinal()] = method;
         packed[ArgumentIndicies.DECLARATION_CONTEXT.ordinal()] = declarationContext;
         packed[ArgumentIndicies.FRAME_ON_STACK_MARKER.ordinal()] = frameOnStackMarker;
@@ -95,6 +99,11 @@ public final class RubyArguments {
         return (MaterializedFrame) frame.getArguments()[ArgumentIndicies.CALLER_FRAME.ordinal()];
     }
 
+    public static SpecialVariableStorage getCallerStorage(Frame frame) {
+        return (SpecialVariableStorage) frame.getArguments()[ArgumentIndicies.CALLER_SPECIAL_VARIABLE_STORAGE
+                .ordinal()];
+    }
+
     public static InternalMethod getMethod(Frame frame) {
         return (InternalMethod) frame.getArguments()[ArgumentIndicies.METHOD.ordinal()];
     }
@@ -111,8 +120,8 @@ public final class RubyArguments {
         return frame.getArguments()[ArgumentIndicies.SELF.ordinal()];
     }
 
-    public static DynamicObject getBlock(Frame frame) {
-        return (DynamicObject) frame.getArguments()[ArgumentIndicies.BLOCK.ordinal()];
+    public static RubyProc getBlock(Frame frame) {
+        return (RubyProc) frame.getArguments()[ArgumentIndicies.BLOCK.ordinal()];
     }
 
     public static int getArgumentsCount(Frame frame) {
@@ -179,18 +188,13 @@ public final class RubyArguments {
         return frame.getArguments()[ArgumentIndicies.SELF.ordinal()];
     }
 
-    public static DynamicObject tryGetBlock(Frame frame) {
+    public static RubyProc tryGetBlock(Frame frame) {
         if (ArgumentIndicies.BLOCK.ordinal() >= frame.getArguments().length) {
             return null;
         }
 
-        final Object block = frame.getArguments()[ArgumentIndicies.BLOCK.ordinal()];
-
-        if (block instanceof DynamicObject) {
-            return (DynamicObject) block;
-        } else {
-            return null;
-        }
+        Object proc = frame.getArguments()[ArgumentIndicies.BLOCK.ordinal()];
+        return proc instanceof RubyProc ? (RubyProc) proc : null;
     }
 
     public static InternalMethod tryGetMethod(Frame frame) {

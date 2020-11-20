@@ -9,43 +9,41 @@
  */
 package org.truffleruby.core.cast;
 
-import org.truffleruby.Layouts;
+import org.truffleruby.core.array.RubyArray;
 import org.truffleruby.language.RubyContextSourceNode;
-import org.truffleruby.language.RubyGuards;
 import org.truffleruby.language.RubyNode;
 import org.truffleruby.language.control.RaiseException;
-import org.truffleruby.language.dispatch.CallDispatchHeadNode;
+import org.truffleruby.language.dispatch.DispatchNode;
 
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.NodeChild;
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.BranchProfile;
 
 
 @NodeChild(value = "child", type = RubyNode.class)
 public abstract class ToAryNode extends RubyContextSourceNode {
 
-    @Child private CallDispatchHeadNode toAryNode;
+    @Child private DispatchNode toAryNode;
 
     public static ToAryNode createInternal() {
         return ToAryNodeGen.create(null);
     }
 
-    public abstract DynamicObject executeToAry(Object object);
+    public abstract RubyArray executeToAry(Object object);
 
-    @Specialization(guards = "isRubyArray(array)")
-    protected DynamicObject coerceRubyArray(DynamicObject array) {
+    @Specialization
+    protected RubyArray coerceRubyArray(RubyArray array) {
         return array;
     }
 
     @Specialization(guards = "!isRubyArray(object)")
-    protected DynamicObject coerceObject(Object object,
+    protected RubyArray coerceObject(Object object,
             @Cached BranchProfile errorProfile) {
         if (toAryNode == null) {
             CompilerDirectives.transferToInterpreterAndInvalidate();
-            toAryNode = insert(CallDispatchHeadNode.createPrivate());
+            toAryNode = insert(DispatchNode.create());
         }
 
         final Object coerced;
@@ -53,7 +51,7 @@ public abstract class ToAryNode extends RubyContextSourceNode {
             coerced = toAryNode.call(object, "to_ary");
         } catch (RaiseException e) {
             errorProfile.enter();
-            if (Layouts.BASIC_OBJECT.getLogicalClass(e.getException()) == coreLibrary().noMethodErrorClass) {
+            if (e.getException().getLogicalClass() == coreLibrary().noMethodErrorClass) {
                 throw new RaiseException(
                         getContext(),
                         coreExceptions().typeErrorNoImplicitConversion(object, "Array", this));
@@ -62,8 +60,8 @@ public abstract class ToAryNode extends RubyContextSourceNode {
             }
         }
 
-        if (RubyGuards.isRubyArray(coerced)) {
-            return (DynamicObject) coerced;
+        if (coerced instanceof RubyArray) {
+            return (RubyArray) coerced;
         } else {
             errorProfile.enter();
             throw new RaiseException(

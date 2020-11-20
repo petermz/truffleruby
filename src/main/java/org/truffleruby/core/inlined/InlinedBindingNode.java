@@ -9,31 +9,31 @@
  */
 package org.truffleruby.core.inlined;
 
-import org.truffleruby.RubyContext;
+import org.truffleruby.RubyLanguage;
 import org.truffleruby.core.binding.BindingNodes;
+import org.truffleruby.core.binding.RubyBinding;
 import org.truffleruby.language.dispatch.RubyCallNodeParameters;
-import org.truffleruby.language.methods.LookupMethodNode;
 
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.frame.VirtualFrame;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.source.SourceSection;
+import org.truffleruby.language.methods.LookupMethodOnSelfNode;
 
 public abstract class InlinedBindingNode extends UnaryInlinedOperationNode {
 
     protected static final String METHOD = "binding";
 
-    public InlinedBindingNode(RubyContext context, RubyCallNodeParameters callNodeParameters) {
-        super(context, callNodeParameters);
+    public InlinedBindingNode(RubyLanguage language, RubyCallNodeParameters callNodeParameters) {
+        super(language, callNodeParameters);
     }
 
     @Specialization(
             guards = { "lookupNode.lookupIgnoringVisibility(frame, self, METHOD) == coreMethods().BINDING", },
             assumptions = "assumptions",
             limit = "1")
-    protected DynamicObject binding(VirtualFrame frame, Object self,
-            @Cached LookupMethodNode lookupNode,
+    protected RubyBinding binding(VirtualFrame frame, Object self,
+            @Cached LookupMethodOnSelfNode lookupNode,
             @Cached("getMyEncapsulatingSourceSection()") SourceSection sourceSection) {
         return BindingNodes.createBinding(getContext(), frame.materialize(), sourceSection);
     }

@@ -9,20 +9,21 @@
  */
 package org.truffleruby.core.exception;
 
-import org.truffleruby.Layouts;
+import com.oracle.truffle.api.CompilerDirectives;
 import org.truffleruby.RubyContext;
+import org.truffleruby.core.klass.RubyClass;
 import org.truffleruby.core.module.ModuleFields;
-import org.truffleruby.core.string.StringOperations;
+import org.truffleruby.core.proc.RubyProc;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.core.thread.ThreadNodes.ThreadGetExceptionNode;
 import org.truffleruby.language.Nil;
 import org.truffleruby.language.RubyGuards;
 import org.truffleruby.language.backtrace.Backtrace;
-import org.truffleruby.language.control.JavaException;
 import org.truffleruby.language.control.RaiseException;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.nodes.Node;
-import com.oracle.truffle.api.object.DynamicObject;
+import com.oracle.truffle.api.object.Shape;
 import com.oracle.truffle.api.source.SourceSection;
 
 public abstract class ExceptionOperations {
@@ -39,25 +40,24 @@ public abstract class ExceptionOperations {
     }
 
     @TruffleBoundary
-    private static String messageFieldToString(RubyContext context, DynamicObject exception) {
-        Object message = Layouts.EXCEPTION.getMessage(exception);
+    private static String messageFieldToString(RubyContext context, RubyException exception) {
+        Object message = exception.message;
         if (message == null || message == Nil.INSTANCE) {
-            final ModuleFields exceptionClass = Layouts.MODULE
-                    .getFields(Layouts.BASIC_OBJECT.getLogicalClass(exception));
+            final ModuleFields exceptionClass = exception.getLogicalClass().fields;
             return exceptionClass.getName(); // What Exception#message would return if no message is set
         } else if (RubyGuards.isRubyString(message)) {
-            return StringOperations.getString((DynamicObject) message);
+            return ((RubyString) message).getJavaString();
         } else {
             return message.toString();
         }
     }
 
     @TruffleBoundary
-    public static String messageToString(RubyContext context, DynamicObject exception) {
+    public static String messageToString(RubyContext context, RubyException exception) {
         try {
             final Object messageObject = context.send(exception, "message");
             if (RubyGuards.isRubyString(messageObject)) {
-                return StringOperations.getString((DynamicObject) messageObject);
+                return ((RubyString) messageObject).getJavaString();
             }
         } catch (Throwable e) {
             // Fall back to the internal message field
@@ -65,37 +65,33 @@ public abstract class ExceptionOperations {
         return messageFieldToString(context, exception);
     }
 
-    public static DynamicObject createRubyException(RubyContext context, DynamicObject rubyClass, Object message,
+    public static RubyException createRubyException(RubyContext context, RubyClass rubyClass, Object message,
             Node node, Throwable javaException) {
         return createRubyException(context, rubyClass, message, node, null, javaException);
     }
 
-    public static DynamicObject createRubyException(RubyContext context, DynamicObject rubyClass, Object message,
+    public static RubyException createRubyException(RubyContext context, RubyClass rubyClass, Object message,
             Node node, SourceSection sourceLocation, Throwable javaException) {
         final Backtrace backtrace = context.getCallStack().getBacktrace(node, sourceLocation, javaException);
         return createRubyException(context, rubyClass, message, backtrace);
     }
 
-    // because the factory is not constant
     @TruffleBoundary
-    public static DynamicObject createRubyException(RubyContext context, DynamicObject rubyClass, Object message,
+    public static RubyException createRubyException(RubyContext context, RubyClass rubyClass, Object message,
             Backtrace backtrace) {
         final Object cause = ThreadGetExceptionNode.getLastException(context);
         context.getCoreExceptions().showExceptionIfDebug(rubyClass, message, backtrace);
-        return Layouts.CLASS
-                .getInstanceFactory(rubyClass)
-                .newInstance(Layouts.EXCEPTION.build(message, null, backtrace, cause, null, null));
+        final Shape shape = rubyClass.instanceShape;
+        return new RubyException(rubyClass, shape, message, backtrace, cause);
     }
 
-    // because the factory is not constant
     @TruffleBoundary
-    public static DynamicObject createSystemCallError(RubyContext context, DynamicObject rubyClass,
-            Object message,
-            int errno, Backtrace backtrace) {
+    public static RubySystemCallError createSystemCallError(RubyContext context, RubyClass rubyClass,
+            Object message, int errno, Backtrace backtrace) {
         final Object cause = ThreadGetExceptionNode.getLastException(context);
         context.getCoreExceptions().showExceptionIfDebug(rubyClass, message, backtrace);
-        return Layouts.CLASS.getInstanceFactory(rubyClass).newInstance(
-                Layouts.SYSTEM_CALL_ERROR.build(message, null, backtrace, cause, null, null, errno));
+        final Shape shape = rubyClass.instanceShape;
+        return new RubySystemCallError(rubyClass, shape, message, backtrace, cause, errno);
     }
 
     @TruffleBoundary // Exception#initCause is blacklisted in TruffleFeature
@@ -103,20 +99,18 @@ public abstract class ExceptionOperations {
         exception.initCause(cause);
     }
 
-    public static DynamicObject getFormatter(String name, RubyContext context) {
-        return (DynamicObject) Layouts.MODULE
-                .getFields(context.getCoreLibrary().truffleExceptionOperationsModule)
-                .getConstant(name)
-                .getValue();
+    public static RubyProc getFormatter(String name, RubyContext context) {
+        return (RubyProc) context.getCoreLibrary().truffleExceptionOperationsModule.fields.getConstant(name).getValue();
     }
 
+    /** @see org.truffleruby.cext.CExtNodes.RaiseExceptionNode */
     public static RuntimeException rethrow(Throwable throwable) {
         if (throwable instanceof RuntimeException) {
             throw (RuntimeException) throwable;
         } else if (throwable instanceof Error) {
             throw (Error) throwable;
         } else {
-            throw new JavaException(throwable);
+            throw CompilerDirectives.shouldNotReachHere("Checked Java Throwable rethrown", throwable);
         }
     }
 

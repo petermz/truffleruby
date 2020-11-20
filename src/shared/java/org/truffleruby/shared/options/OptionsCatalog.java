@@ -128,18 +128,17 @@ public class OptionsCatalog {
     public static final OptionKey<Integer> PACK_RECOVER_LOOP_MIN_KEY = new OptionKey<>(32);
     public static final OptionKey<Integer> CEXTS_MARKING_CACHE_KEY = new OptionKey<>(100);
     public static final OptionKey<Boolean> CEXTS_TONATIVE_STATS_KEY = new OptionKey<>(false);
-    public static final OptionKey<Integer> ROPE_DEPTH_THRESHOLD_KEY = new OptionKey<>(128);
     public static final OptionKey<Integer> GLOBAL_VARIABLE_MAX_INVALIDATIONS_KEY = new OptionKey<>(1);
     public static final OptionKey<Boolean> CLONE_DEFAULT_KEY = new OptionKey<>(true);
     public static final OptionKey<Boolean> INLINE_DEFAULT_KEY = new OptionKey<>(true);
     public static final OptionKey<Boolean> CORE_ALWAYS_CLONE_KEY = new OptionKey<>(false);
     public static final OptionKey<Boolean> ALWAYS_SPLIT_HONOR_KEY = new OptionKey<>(CLONE_DEFAULT_KEY.getDefaultValue());
+    public static final OptionKey<Boolean> NEVER_SPLIT_HONOR_KEY = new OptionKey<>(true);
     public static final OptionKey<Boolean> INLINE_NEEDS_CALLER_FRAME_KEY = new OptionKey<>(INLINE_DEFAULT_KEY.getDefaultValue());
     public static final OptionKey<Boolean> YIELD_ALWAYS_CLONE_KEY = new OptionKey<>(CLONE_DEFAULT_KEY.getDefaultValue());
     public static final OptionKey<Boolean> YIELD_ALWAYS_INLINE_KEY = new OptionKey<>(INLINE_DEFAULT_KEY.getDefaultValue());
     public static final OptionKey<Boolean> METHODMISSING_ALWAYS_CLONE_KEY = new OptionKey<>(CLONE_DEFAULT_KEY.getDefaultValue());
     public static final OptionKey<Boolean> METHODMISSING_ALWAYS_INLINE_KEY = new OptionKey<>(INLINE_DEFAULT_KEY.getDefaultValue());
-    public static final OptionKey<Boolean> CALL_WITH_BLOCK_ALWAYS_CLONE_KEY = new OptionKey<>(CLONE_DEFAULT_KEY.getDefaultValue());
     public static final OptionKey<Boolean> REGEXP_INSTRUMENT_CREATION_KEY = new OptionKey<>(false);
     public static final OptionKey<Boolean> REGEXP_INSTRUMENT_MATCH_KEY = new OptionKey<>(false);
     public static final OptionKey<Boolean> METRICS_TIME_PARSING_FILE_KEY = new OptionKey<>(false);
@@ -905,13 +904,6 @@ public class OptionsCatalog {
             .stability(OptionStability.EXPERIMENTAL)
             .build();
 
-    public static final OptionDescriptor ROPE_DEPTH_THRESHOLD = OptionDescriptor
-            .newBuilder(ROPE_DEPTH_THRESHOLD_KEY, "ruby.rope-depth-threshold")
-            .help("Threshold value at which ropes will be rebalanced (indirectly controls flattening as well)")
-            .category(OptionCategory.INTERNAL)
-            .stability(OptionStability.EXPERIMENTAL)
-            .build();
-
     public static final OptionDescriptor GLOBAL_VARIABLE_MAX_INVALIDATIONS = OptionDescriptor
             .newBuilder(GLOBAL_VARIABLE_MAX_INVALIDATIONS_KEY, "ruby.global-variable-max-invalidations")
             .help("Maximum number of times a global variable can be changed to be considered constant")
@@ -947,6 +939,13 @@ public class OptionsCatalog {
             .stability(OptionStability.EXPERIMENTAL)
             .build();
 
+    public static final OptionDescriptor NEVER_SPLIT_HONOR = OptionDescriptor
+            .newBuilder(NEVER_SPLIT_HONOR_KEY, "ruby.never-split-honor")
+            .help("Honor Truffle::Graal.never_split annotations")
+            .category(OptionCategory.INTERNAL)
+            .stability(OptionStability.EXPERIMENTAL)
+            .build();
+
     public static final OptionDescriptor INLINE_NEEDS_CALLER_FRAME = OptionDescriptor
             .newBuilder(INLINE_NEEDS_CALLER_FRAME_KEY, "ruby.inline-needs-caller-frame")
             .help("Inline methods that need their caller frame")
@@ -978,13 +977,6 @@ public class OptionsCatalog {
     public static final OptionDescriptor METHODMISSING_ALWAYS_INLINE = OptionDescriptor
             .newBuilder(METHODMISSING_ALWAYS_INLINE_KEY, "ruby.method-missing-always-inline")
             .help("Always inline #method_missing")
-            .category(OptionCategory.INTERNAL)
-            .stability(OptionStability.EXPERIMENTAL)
-            .build();
-
-    public static final OptionDescriptor CALL_WITH_BLOCK_ALWAYS_CLONE = OptionDescriptor
-            .newBuilder(CALL_WITH_BLOCK_ALWAYS_CLONE_KEY, "ruby.call-with-block-always-clone")
-            .help("Always clone calls with a literal block")
             .category(OptionCategory.INTERNAL)
             .stability(OptionStability.EXPERIMENTAL)
             .build();
@@ -1263,8 +1255,6 @@ public class OptionsCatalog {
                 return CEXTS_MARKING_CACHE;
             case "ruby.cexts-tonative-stats":
                 return CEXTS_TONATIVE_STATS;
-            case "ruby.rope-depth-threshold":
-                return ROPE_DEPTH_THRESHOLD;
             case "ruby.global-variable-max-invalidations":
                 return GLOBAL_VARIABLE_MAX_INVALIDATIONS;
             case "ruby.clone-default":
@@ -1275,6 +1265,8 @@ public class OptionsCatalog {
                 return CORE_ALWAYS_CLONE;
             case "ruby.always-split-honor":
                 return ALWAYS_SPLIT_HONOR;
+            case "ruby.never-split-honor":
+                return NEVER_SPLIT_HONOR;
             case "ruby.inline-needs-caller-frame":
                 return INLINE_NEEDS_CALLER_FRAME;
             case "ruby.yield-always-clone":
@@ -1285,8 +1277,6 @@ public class OptionsCatalog {
                 return METHODMISSING_ALWAYS_CLONE;
             case "ruby.method-missing-always-inline":
                 return METHODMISSING_ALWAYS_INLINE;
-            case "ruby.call-with-block-always-clone":
-                return CALL_WITH_BLOCK_ALWAYS_CLONE;
             case "ruby.regexp-instrument-creation":
                 return REGEXP_INSTRUMENT_CREATION;
             case "ruby.regexp-instrument-match":
@@ -1418,18 +1408,17 @@ public class OptionsCatalog {
             PACK_RECOVER_LOOP_MIN,
             CEXTS_MARKING_CACHE,
             CEXTS_TONATIVE_STATS,
-            ROPE_DEPTH_THRESHOLD,
             GLOBAL_VARIABLE_MAX_INVALIDATIONS,
             CLONE_DEFAULT,
             INLINE_DEFAULT,
             CORE_ALWAYS_CLONE,
             ALWAYS_SPLIT_HONOR,
+            NEVER_SPLIT_HONOR,
             INLINE_NEEDS_CALLER_FRAME,
             YIELD_ALWAYS_CLONE,
             YIELD_ALWAYS_INLINE,
             METHODMISSING_ALWAYS_CLONE,
             METHODMISSING_ALWAYS_INLINE,
-            CALL_WITH_BLOCK_ALWAYS_CLONE,
             REGEXP_INSTRUMENT_CREATION,
             REGEXP_INSTRUMENT_MATCH,
             METRICS_TIME_PARSING_FILE,

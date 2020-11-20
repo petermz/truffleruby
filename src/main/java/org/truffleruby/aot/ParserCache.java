@@ -13,8 +13,8 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 
+import com.oracle.truffle.api.CompilerDirectives;
 import org.truffleruby.core.CoreLibrary;
-import org.truffleruby.language.control.JavaException;
 import org.truffleruby.language.loader.ResourceLoader;
 import org.truffleruby.parser.RubySource;
 import org.truffleruby.parser.TranslatorDriver;
@@ -52,16 +52,15 @@ public class ParserCache {
             final ResourceLoader resourceLoader = new ResourceLoader();
             return resourceLoader.loadResource(feature, true);
         } catch (IOException e) {
-            throw new JavaException(e);
+            throw CompilerDirectives.shouldNotReachHere(e);
         }
     }
 
     private static RootParseNode parse(RubySource source) {
-        final TranslatorDriver driver = new TranslatorDriver(null);
         final StaticScope staticScope = new StaticScope(StaticScope.Type.LOCAL, null);
         final ParserConfiguration parserConfiguration = new ParserConfiguration(null, false, true, false);
 
-        return driver.parseToJRubyAST(source, staticScope, parserConfiguration);
+        return TranslatorDriver.parseToJRubyAST(null, source, staticScope, parserConfiguration);
     }
 
 }

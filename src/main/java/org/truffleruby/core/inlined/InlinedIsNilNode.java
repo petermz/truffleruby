@@ -9,38 +9,37 @@
  */
 package org.truffleruby.core.inlined;
 
-import org.truffleruby.RubyContext;
-import org.truffleruby.language.dispatch.RubyCallNodeParameters;
-import org.truffleruby.language.methods.LookupMethodNode;
-
 import com.oracle.truffle.api.dsl.Cached;
+import org.truffleruby.RubyLanguage;
+import org.truffleruby.language.Nil;
+import org.truffleruby.language.dispatch.RubyCallNodeParameters;
+
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.frame.VirtualFrame;
+import org.truffleruby.language.methods.LookupMethodOnSelfNode;
 
 public abstract class InlinedIsNilNode extends UnaryInlinedOperationNode {
 
     protected static final String METHOD = "nil?";
 
-    public InlinedIsNilNode(RubyContext context, RubyCallNodeParameters callNodeParameters) {
+    public InlinedIsNilNode(RubyLanguage language, RubyCallNodeParameters callNodeParameters) {
         super(
-                context,
+                language,
                 callNodeParameters,
-                context.getCoreMethods().nilClassIsNilAssumption);
+                language.coreMethodAssumptions.nilClassIsNilAssumption);
     }
 
-    @Specialization(guards = "isNil(self)", assumptions = "assumptions")
-    protected boolean nil(Object self) {
+    @Specialization(assumptions = "assumptions")
+    protected boolean nil(Nil self) {
         return true;
     }
 
     @Specialization(
-            guards = {
-                    "isRubyValue(self)",
-                    "lookupNode.lookup(frame, self, METHOD) == coreMethods().KERNEL_IS_NIL", },
+            guards = "lookup.lookupProtected(frame, self, METHOD) == coreMethods().KERNEL_IS_NIL",
             assumptions = "assumptions",
             limit = "1")
     protected boolean notNil(VirtualFrame frame, Object self,
-            @Cached LookupMethodNode lookupNode) {
+            @Cached LookupMethodOnSelfNode lookup) {
         return false;
     }
 

@@ -20,21 +20,19 @@ public abstract class Rope implements Comparable<Rope> {
     // NativeRope, RepeatingRope, 3 LeafRope, ConcatRope, SubstringRope, 1 LazyRope
     public static final int NUMBER_OF_CONCRETE_CLASSES = 8;
 
-    // Useful for debugging. Setting to false allow to catch wrong usages.
-    protected static final boolean ALLOW_TO_STRING = true;
+    // Useful for debugging. Setting to true avoids ManagedRope#toString to populate bytes as a side-effect of the debugger calling toString().
+    protected static final boolean DEBUG_ROPE_BYTES = false;
 
-    private final Encoding encoding;
+    public final Encoding encoding;
     private final int byteLength;
-    private final int ropeDepth;
     private int hashCode = 0;
     protected byte[] bytes;
 
-    protected Rope(Encoding encoding, int byteLength, int ropeDepth, byte[] bytes) {
+    protected Rope(Encoding encoding, int byteLength, byte[] bytes) {
         assert encoding != null;
 
         this.encoding = encoding;
         this.byteLength = byteLength;
-        this.ropeDepth = ropeDepth;
         this.bytes = bytes;
     }
 
@@ -85,10 +83,6 @@ public abstract class Rope implements Comparable<Rope> {
 
     public final boolean isAsciiOnly() {
         return getCodeRange() == CodeRange.CR_7BIT;
-    }
-
-    public final int depth() {
-        return ropeDepth;
     }
 
     @Override

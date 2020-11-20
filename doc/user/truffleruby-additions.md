@@ -4,7 +4,7 @@ TruffleRuby is intended to be usable as a standard Ruby implementation that runs
 programs developed on other implementations, but it also provides additional
 functionality beyond that of other implementations.
 
-Also see the [document describing our compatibility](compatibility.md) with
+See the [Compatibility](compatibility.md) guide for compatibility with
 other Ruby implementations.
 
 ## Detecting If You Run on TruffleRuby
@@ -32,6 +32,8 @@ standard `RUBY_ENGINE_VERSION` constant.
 
 TruffleRuby provides these non-standard methods and classes that provide
 additional functionality in the `TruffleRuby` module.
+
+`TruffleRuby.graalvm_home` returns the GraalVM home or `nil` if running outside of GraalVM (e.g., TruffleRuby standalone).
 
 `TruffleRuby.jit?` reports if the GraalVM Compiler is available and will be
 used.
@@ -85,8 +87,8 @@ regardless of the version of the `ffi` gem.
 ## Polyglot Programming
 
 The `Polyglot` and `Java` modules provides access to the polyglot programming
-functionality of GraalVM. They are
-[described in a separate document](polyglot.md).
+functionality of GraalVM.
+They are described in the [Polyglot Programming](polyglot.md) guide.
 
 ## Unsupported Additional Functionality
 

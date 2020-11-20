@@ -10,16 +10,12 @@
 package org.truffleruby.core.numeric;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
-import com.oracle.truffle.api.object.DynamicObject;
+import org.truffleruby.stdlib.bigdecimal.RubyBigDecimal;
+
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.MathContext;
 import java.math.RoundingMode;
-
-import static org.truffleruby.Layouts.BIGNUM;
-import static org.truffleruby.Layouts.BIG_DECIMAL;
-import static org.truffleruby.language.RubyGuards.isRubyBigDecimal;
-import static org.truffleruby.language.RubyGuards.isRubyBignum;
 
 /** Wrapper for methods of {@link BigDecimal} decorated with a {@link TruffleBoundary} annotation, as these methods are
  * blacklisted by SVM. */
@@ -30,9 +26,8 @@ public final class BigDecimalOps {
         return new BigDecimal(value);
     }
 
-    public static BigDecimal fromBigInteger(DynamicObject value) {
-        assert isRubyBignum(value);
-        return fromBigInteger(BIGNUM.getValue(value));
+    public static BigDecimal fromBigInteger(RubyBignum value) {
+        return fromBigInteger(value.value);
     }
 
     @TruffleBoundary
@@ -40,9 +35,8 @@ public final class BigDecimalOps {
         return a.compareTo(b);
     }
 
-    public static int compare(DynamicObject a, BigDecimal b) {
-        assert isRubyBigDecimal(a);
-        return compare(BIG_DECIMAL.getValue(a), b);
+    public static int compare(RubyBigDecimal a, BigDecimal b) {
+        return compare(a.value, b);
     }
 
     @TruffleBoundary
@@ -55,9 +49,8 @@ public final class BigDecimalOps {
         return value.signum();
     }
 
-    public static int signum(DynamicObject value) {
-        assert isRubyBigDecimal(value);
-        return signum(BIG_DECIMAL.getValue(value));
+    public static int signum(RubyBigDecimal value) {
+        return signum(value.value);
     }
 
     @TruffleBoundary

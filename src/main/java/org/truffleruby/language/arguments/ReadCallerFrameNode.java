@@ -10,7 +10,7 @@
 package org.truffleruby.language.arguments;
 
 import org.truffleruby.language.RubyContextNode;
-import org.truffleruby.language.FrameSendingNode;
+import org.truffleruby.language.FrameOrStorageSendingNode;
 import org.truffleruby.language.NotOptimizedWarningNode;
 
 import com.oracle.truffle.api.CompilerDirectives;
@@ -66,8 +66,8 @@ public class ReadCallerFrameNode extends RubyContextNode {
         if (callerNode instanceof DirectCallNode || callerNode instanceof IndirectCallNode) {
             Node parent = callerNode.getParent();
             while (parent != null) {
-                if (parent instanceof FrameSendingNode) {
-                    ((FrameSendingNode) parent).startSendingOwnFrame();
+                if (parent instanceof FrameOrStorageSendingNode) {
+                    ((FrameOrStorageSendingNode) parent).startSendingOwnFrame();
                     return true;
                 }
                 if (parent instanceof RubyContextNode) {

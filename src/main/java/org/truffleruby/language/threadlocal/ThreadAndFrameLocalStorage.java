@@ -9,35 +9,36 @@
  */
 package org.truffleruby.language.threadlocal;
 
-import java.lang.ref.WeakReference;
-
 import org.truffleruby.RubyContext;
+import org.truffleruby.language.Nil;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.profiles.ConditionProfile;
-import org.truffleruby.language.Nil;
 
 public class ThreadAndFrameLocalStorage {
 
-    private final WeakReference<Thread> originalThread;
+    // We store a thread id rather than the thread itself. Although
+    // this id can theoretically be reused the implementation simply
+    // increments a long and has 48 bits that it can use.
+    private final long originalThreadId;
     private Object originalThreadValue;
     private volatile ThreadLocal<Object> otherThreadValues = null;
 
-    @TruffleBoundary // reference logic is svm-substituted
     public ThreadAndFrameLocalStorage(RubyContext context) {
-        // Cannot store a Thread instance while pre-initializing
-        originalThread = new WeakReference<>(context.isPreInitializing() ? null : Thread.currentThread());
-        originalThreadValue = initialValue();
+        // Cannot store a Thread id while pre-initializing
+        originalThreadId = context.isPreInitializing() ? 0 : Thread.currentThread().getId();
+        originalThreadValue = Nil.INSTANCE;
     }
 
     public Object get(ConditionProfile sameThreadProfile) {
-        if (sameThreadProfile.profile(Thread.currentThread() == originalThread.get())) {
+        if (sameThreadProfile.profile(Thread.currentThread().getId() == originalThreadId)) {
             return originalThreadValue;
         } else {
             return fallbackGet();
         }
     }
 
+    @TruffleBoundary
     private ThreadLocal<Object> getOtherThreadValues() {
         if (otherThreadValues != null) {
             return otherThreadValues;
@@ -46,7 +47,7 @@ public class ThreadAndFrameLocalStorage {
                 if (otherThreadValues != null) {
                     return otherThreadValues;
                 } else {
-                    otherThreadValues = ThreadLocal.withInitial(this::initialValue);
+                    otherThreadValues = ThreadLocal.withInitial(() -> Nil.INSTANCE);
                     return otherThreadValues;
                 }
             }
@@ -59,7 +60,7 @@ public class ThreadAndFrameLocalStorage {
     }
 
     public void set(Object value, ConditionProfile sameThreadProfile) {
-        if (sameThreadProfile.profile(Thread.currentThread() == originalThread.get())) {
+        if (sameThreadProfile.profile(Thread.currentThread().getId() == originalThreadId)) {
             originalThreadValue = value;
         } else {
             fallbackSet(value);
@@ -69,10 +70,6 @@ public class ThreadAndFrameLocalStorage {
     @TruffleBoundary
     private void fallbackSet(Object value) {
         getOtherThreadValues().set(value);
-    }
-
-    protected Object initialValue() {
-        return Nil.INSTANCE;
     }
 
 }

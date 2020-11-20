@@ -14,27 +14,28 @@ import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.ConcurrentLinkedDeque;
 
-import org.truffleruby.Layouts;
 import org.truffleruby.RubyContext;
+import org.truffleruby.core.exception.RubyException;
 import org.truffleruby.core.proc.ProcOperations;
+import org.truffleruby.core.proc.RubyProc;
 import org.truffleruby.language.control.ExitException;
 import org.truffleruby.language.control.RaiseException;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
-import com.oracle.truffle.api.object.DynamicObject;
+import org.truffleruby.language.objects.IsANode;
 
 public class AtExitManager {
 
     private final RubyContext context;
 
-    private final Deque<DynamicObject> atExitHooks = new ConcurrentLinkedDeque<>();
-    private final Deque<DynamicObject> systemExitHooks = new ConcurrentLinkedDeque<>();
+    private final Deque<RubyProc> atExitHooks = new ConcurrentLinkedDeque<>();
+    private final Deque<RubyProc> systemExitHooks = new ConcurrentLinkedDeque<>();
 
     public AtExitManager(RubyContext context) {
         this.context = context;
     }
 
-    public void add(DynamicObject block, boolean always) {
+    public void add(RubyProc block, boolean always) {
         if (always) {
             systemExitHooks.push(block);
         } else {
@@ -42,7 +43,7 @@ public class AtExitManager {
         }
     }
 
-    public DynamicObject runAtExitHooks() {
+    public RubyException runAtExitHooks() {
         return runExitHooks(atExitHooks, "at_exit");
     }
 
@@ -51,11 +52,11 @@ public class AtExitManager {
     }
 
     @TruffleBoundary
-    private DynamicObject runExitHooks(Deque<DynamicObject> stack, String name) {
-        DynamicObject lastException = null;
+    private RubyException runExitHooks(Deque<RubyProc> stack, String name) {
+        RubyException lastException = null;
 
         while (true) {
-            DynamicObject block = stack.poll();
+            RubyProc block = stack.poll();
             if (block == null) {
                 return lastException;
             }
@@ -74,22 +75,22 @@ public class AtExitManager {
         }
     }
 
-    public List<DynamicObject> getHandlers() {
-        final List<DynamicObject> handlers = new ArrayList<>();
+    public List<RubyProc> getHandlers() {
+        final List<RubyProc> handlers = new ArrayList<>();
         handlers.addAll(atExitHooks);
         handlers.addAll(systemExitHooks);
         return handlers;
     }
 
-    @TruffleBoundary
-    public static void handleAtExitException(RubyContext context, DynamicObject rubyException) {
-        DynamicObject logicalClass = Layouts.BASIC_OBJECT.getLogicalClass(rubyException);
-        if (logicalClass == context.getCoreLibrary().systemExitClass ||
-                logicalClass == context.getCoreLibrary().signalExceptionClass) {
-            // Do not show the backtrace for these
-        } else {
+    public static boolean isSilentException(RubyContext context, RubyException rubyException) {
+        final IsANode isANode = IsANode.getUncached();
+        return isANode.executeIsA(rubyException, context.getCoreLibrary().systemExitClass) ||
+                isANode.executeIsA(rubyException, context.getCoreLibrary().signalExceptionClass);
+    }
+
+    private static void handleAtExitException(RubyContext context, RubyException rubyException) {
+        if (!isSilentException(context, rubyException)) {
             context.getDefaultBacktraceFormatter().printRubyExceptionOnEnvStderr("", rubyException);
         }
     }
-
 }

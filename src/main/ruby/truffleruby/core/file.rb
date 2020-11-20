@@ -102,15 +102,11 @@ class File < IO
     FNM_SYSCASE = File::FNM_SYSCASE
   end
 
-  FFI = Truffle::FFI
-
   SEPARATOR = '/'
   Separator = SEPARATOR
   ALT_SEPARATOR = nil
   PATH_SEPARATOR = ':'
   POSIX = Truffle::POSIX
-
-  attr_reader :path
 
   # The mode_t type is 2 bytes (ushort). Instead of getting whatever
   # value happens to be in the least significant 16 bits, just set
@@ -122,12 +118,7 @@ class File < IO
   end
 
   def self.absolute_path(obj, dir = nil)
-    obj = path(obj)
-    if obj[0] == '~'
-      File.join Dir.getwd, dir.to_s, obj
-    else
-      expand_path(obj, dir)
-    end
+    Truffle::FileOperations.expand_path(obj, dir, false)
   end
 
   def self.absolute_path?(path)
@@ -301,7 +292,7 @@ class File < IO
 
   def chmod(mode)
     mode = Truffle::Type.coerce_to(mode, Integer, :to_int)
-    n = POSIX.fchmod @descriptor, File.clamp_short(mode)
+    n = POSIX.fchmod Primitive.io_fd(self), File.clamp_short(mode)
     Errno.handle if n == -1
     n
   end
@@ -319,7 +310,7 @@ class File < IO
       group = -1
     end
 
-    n = POSIX.fchown @descriptor, owner, group
+    n = POSIX.fchown Primitive.io_fd(self), owner, group
     Errno.handle if n == -1
     n
   end
@@ -463,11 +454,6 @@ class File < IO
     mode > 0
   end
 
-  # Pull a constant for Dir local to File so that we don't have to depend
-  # on the global Dir constant working. This sounds silly, I know, but it's a
-  # little bit of defensive coding so Rubinius can run things like fakefs better.
-  PrivateDir = ::Dir
-
   ##
   # Converts a pathname to an absolute pathname. Relative
   # paths are referenced from the current working directory
@@ -480,78 +466,7 @@ class File < IO
   #  File.expand_path("~oracle/bin")           #=> "/home/oracle/bin"
   #  File.expand_path("../../bin", "/tmp/x")   #=> "/bin"
   def self.expand_path(path, dir=nil)
-    path = Truffle::Type.coerce_to_path(path)
-    str = ''.encode path.encoding
-    first = path[0]
-    if first == ?~
-      first_char = path[1]
-
-      if first_char == ?/ || Primitive.nil?(first_char)
-        home = ENV['HOME']
-        raise ArgumentError, "couldn't find HOME environment variable when expanding '~'" if Primitive.nil? home
-        raise ArgumentError, 'non-absolute home' unless home.start_with?('/')
-      end
-
-      case first_char
-      when ?/
-        path = home + path.byteslice(1, path.bytesize - 1)
-      when nil
-        if home.empty?
-          raise ArgumentError, "HOME environment variable is empty expanding '~'"
-        end
-
-        return home.dup
-      else
-        length = Primitive.find_string(path, '/', 1) || path.bytesize
-        name = path.byteslice 1, length - 1
-
-        if ptr = Truffle::POSIX.truffleposix_get_user_home(name) and !ptr.null?
-          dir = ptr.read_string
-          ptr.free
-          raise ArgumentError, "user #{name} does not exist" if dir.empty?
-        else
-          Errno.handle
-        end
-
-        path = dir + path.byteslice(length, path.bytesize - length)
-      end
-    elsif first != ?/
-      if dir
-        dir = expand_path dir
-      else
-        dir = PrivateDir.pwd
-      end
-
-      path = "#{dir}/#{path}"
-    end
-
-    items = []
-    start = 0
-    bytesize = path.bytesize
-
-    while index = Primitive.find_string(path, '/', start) or (start < bytesize and index = bytesize)
-      length = index - start
-
-      if length > 0
-        item = path.byteslice start, length
-
-        if item == '..'
-          items.pop
-        elsif item != '.'
-          items << item
-        end
-      end
-
-      start = index + 1
-    end
-
-    if items.empty?
-      str << '/'
-    else
-      items.each { |x| Primitive.string_append(str, "/#{x}") }
-    end
-
-    str
+    Truffle::FileOperations.expand_path(path, dir, true)
   end
 
   ##
@@ -818,7 +733,7 @@ class File < IO
     when String
       first = first.dup
     when Array
-      recursion = Thread.detect_recursion(first) do
+      recursion = Truffle::ThreadOperations.detect_recursion(first) do
         first = join(*first)
       end
 
@@ -839,7 +754,7 @@ class File < IO
       when String
         value = el
       when Array
-        recursion = Thread.detect_recursion(el) do
+        recursion = Truffle::ThreadOperations.detect_recursion(el) do
           value = join(*el)
         end
 
@@ -928,7 +843,7 @@ class File < IO
   #  File.symlink("testfile", "link2test")   #=> 0
   #  File.readlink("link2test")              #=> "testfile"
   def self.readlink(path)
-    FFI::MemoryPointer.new(Truffle::Platform::PATH_MAX) do |ptr|
+    Truffle::FFI::MemoryPointer.new(Truffle::Platform::PATH_MAX) do |ptr|
       n = POSIX.readlink Truffle::Type.coerce_to_path(path), ptr, Truffle::Platform::PATH_MAX
       Errno.handle if n == -1
 
@@ -1298,7 +1213,7 @@ class File < IO
   def flock(const)
     const = Truffle::Type.coerce_to const, Integer, :to_int
 
-    result = POSIX.truffleposix_flock @descriptor, const
+    result = POSIX.truffleposix_flock Primitive.io_fd(self), const
     if result == -1
       begin
         Errno.handle
@@ -1318,9 +1233,12 @@ class File < IO
   end
 
   def stat
-    Stat.fstat @descriptor
+    Stat.fstat Primitive.io_fd(self)
   end
 
+  def path
+    @path.dup
+  end
   alias_method :to_path, :path
 
   def truncate(length)
@@ -1332,7 +1250,7 @@ class File < IO
     flush
     reset_buffering
 
-    r = Truffle::POSIX.ftruncate(@descriptor, length)
+    r = Truffle::POSIX.ftruncate(Primitive.io_fd(self), length)
     Errno.handle(path) if r == -1
     r
   end
@@ -1346,12 +1264,12 @@ class File < IO
   def size
     raise IOError, 'closed stream' if closed?
     flush
-    s = Truffle::POSIX.truffleposix_fstat_size(@descriptor)
+    s = Truffle::POSIX.truffleposix_fstat_size(Primitive.io_fd(self))
 
     if s >= 0
       s
     else
-      Errno.handle "file descriptor #{@descriptor}"
+      Errno.handle "file descriptor #{Primitive.io_fd(self)}"
     end
   end
 end     # File

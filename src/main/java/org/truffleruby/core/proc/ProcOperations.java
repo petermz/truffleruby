@@ -9,58 +9,60 @@
  */
 package org.truffleruby.core.proc;
 
-import org.truffleruby.Layouts;
+import com.oracle.truffle.api.object.Shape;
 import org.truffleruby.RubyContext;
-import org.truffleruby.language.RubyGuards;
+import org.truffleruby.RubyLanguage;
+import org.truffleruby.core.klass.RubyClass;
 import org.truffleruby.language.arguments.RubyArguments;
 import org.truffleruby.language.control.FrameOnStackMarker;
 import org.truffleruby.language.methods.DeclarationContext;
 import org.truffleruby.language.methods.InternalMethod;
 import org.truffleruby.language.methods.SharedMethodInfo;
+import org.truffleruby.language.threadlocal.SpecialVariableStorage;
 
 import com.oracle.truffle.api.RootCallTarget;
 import com.oracle.truffle.api.frame.MaterializedFrame;
-import com.oracle.truffle.api.object.DynamicObject;
-import com.oracle.truffle.api.object.DynamicObjectFactory;
 
 public abstract class ProcOperations {
 
-    private static Object[] packArguments(DynamicObject proc, Object... args) {
+    private static Object[] packArguments(RubyProc proc, Object... args) {
         return RubyArguments.pack(
-                Layouts.PROC.getDeclarationFrame(proc),
+                proc.declarationFrame,
                 null,
-                Layouts.PROC.getMethod(proc),
-                Layouts.PROC.getFrameOnStackMarker(proc),
+                null,
+                proc.method,
+                proc.frameOnStackMarker,
                 getSelf(proc),
-                Layouts.PROC.getBlock(proc),
+                proc.block,
                 args);
     }
 
     /** Only use for Proc called with no Truffle frame above, i.e. a root call. */
-    public static Object rootCall(DynamicObject proc, Object... args) {
+    public static Object rootCall(RubyProc proc, Object... args) {
         // We cannot break out of a block without a frame above. This is particularly important for
         // Thread.new as otherwise the flag could be set too late (after returning from Thread.new
         // and not when the new Thread starts executing).
-        final FrameOnStackMarker frameOnStackMarker = Layouts.PROC.getFrameOnStackMarker(proc);
+        final FrameOnStackMarker frameOnStackMarker = proc.frameOnStackMarker;
         if (frameOnStackMarker != null) {
             frameOnStackMarker.setNoLongerOnStack();
         }
 
-        return Layouts.PROC.getCallTargetForType(proc).call(packArguments(proc, args));
+        return proc.callTargetForType.call(packArguments(proc, args));
     }
 
-    public static DynamicObject createRubyProc(
-            DynamicObjectFactory instanceFactory,
+    public static RubyProc createRubyProc(
+            RubyClass rubyClass,
+            Shape procShape,
             ProcType type,
             SharedMethodInfo sharedMethodInfo,
             RootCallTarget callTargetForProcs,
             RootCallTarget callTargetForLambdas,
             MaterializedFrame declarationFrame,
+            SpecialVariableStorage storage,
             InternalMethod method,
-            DynamicObject block,
+            RubyProc block,
             FrameOnStackMarker frameOnStackMarker,
             DeclarationContext declarationContext) {
-        assert block == null || RubyGuards.isRubyProc(block);
 
         final RootCallTarget callTargetForType;
 
@@ -75,33 +77,40 @@ public abstract class ProcOperations {
                 throw new IllegalArgumentException();
         }
 
-        return instanceFactory.newInstance(Layouts.PROC.build(
+        return new RubyProc(
+                rubyClass,
+                procShape,
                 type,
                 sharedMethodInfo,
                 callTargetForType,
                 callTargetForLambdas,
                 declarationFrame,
+                storage,
                 method,
                 block,
                 frameOnStackMarker,
-                declarationContext));
+                declarationContext);
+
+        // TODO(norswap, 04 Aug 2020): do allocation tracing (normally via AllocateHelper)?
     }
 
-    public static DynamicObject createLambdaFromBlock(RubyContext context, DynamicObject block) {
+    public static RubyProc createLambdaFromBlock(RubyContext context, RubyProc block) {
         return ProcOperations.createRubyProc(
-                context.getCoreLibrary().procFactory,
+                context.getCoreLibrary().procClass,
+                RubyLanguage.procShape,
                 ProcType.LAMBDA,
-                Layouts.PROC.getSharedMethodInfo(block),
-                Layouts.PROC.getCallTargetForLambdas(block),
-                Layouts.PROC.getCallTargetForLambdas(block),
-                Layouts.PROC.getDeclarationFrame(block),
-                Layouts.PROC.getMethod(block),
-                Layouts.PROC.getBlock(block),
+                block.sharedMethodInfo,
+                block.callTargetForLambdas,
+                block.callTargetForLambdas,
+                block.declarationFrame,
+                block.declarationStorage,
+                block.method,
+                block.block,
                 null,
-                Layouts.PROC.getDeclarationContext(block));
+                block.declarationContext);
     }
 
-    public static Object getSelf(DynamicObject proc) {
-        return RubyArguments.getSelf(Layouts.PROC.getDeclarationFrame(proc));
+    public static Object getSelf(RubyProc proc) {
+        return RubyArguments.getSelf(proc.declarationFrame);
     }
 }

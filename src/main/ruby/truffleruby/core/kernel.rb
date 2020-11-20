@@ -188,7 +188,7 @@ module Kernel
 
   def !~(other)
     r = self =~ other ? false : true
-    Truffle::RegexpOperations.set_last_match($~, Primitive.caller_binding)
+    Primitive.regexp_last_match_set(Primitive.caller_special_variables, $~)
     r
   end
 
@@ -236,6 +236,7 @@ module Kernel
       raise Truffle::KernelOperations.load_error(feature)
     end
   end
+  Truffle::Graal.never_split(instance_method(:gem_original_require))
 
   # A #require which lazily loads rubygems when needed.
   # The logic is inlined so there is no extra backtrace entry for lazy-rubygems.
@@ -243,7 +244,9 @@ module Kernel
     feature = Truffle::Type.coerce_to_path(feature)
 
     lazy_rubygems = Truffle::Boot.get_option_or_default('lazy-rubygems', false)
-    upgraded_default_gem = lazy_rubygems && Truffle::GemUtil.upgraded_default_gem?(feature)
+    upgraded_default_gem = lazy_rubygems &&
+        !Truffle::KernelOperations.loading_rubygems? &&
+        Truffle::GemUtil.upgraded_default_gem?(feature)
     if upgraded_default_gem
       status, path = :not_found, nil # load RubyGems
     else
@@ -257,7 +260,9 @@ module Kernel
       Primitive.load_feature(feature, path)
     when :not_found
       if lazy_rubygems
+        Truffle::KernelOperations.loading_rubygems = true
         gem_original_require 'rubygems'
+        Truffle::KernelOperations.loading_rubygems = false
 
         # Check that #require was redefined by RubyGems, otherwise we would end up in infinite recursion
         new_require = ::Kernel.instance_method(:require)
@@ -271,6 +276,7 @@ module Kernel
     end
   end
   module_function :require
+  Truffle::Graal.never_split(instance_method(:require))
 
   Truffle::KernelOperations::ORIGINAL_REQUIRE = instance_method(:require)
 
@@ -290,6 +296,7 @@ module Kernel
     end
   end
   module_function :require_relative
+  Truffle::Graal.never_split(instance_method(:require_relative))
 
   def define_singleton_method(*args, &block)
     singleton_class.define_method(*args, &block)
@@ -359,7 +366,7 @@ module Kernel
 
   def gets(*args)
     line = ARGF.gets(*args)
-    Truffle::IOOperations.set_last_line(line, Primitive.caller_binding) if line
+    Primitive.io_last_line_set(Primitive.caller_special_variables, line) if line
     line
   end
   module_function :gets
@@ -373,18 +380,17 @@ module Kernel
       return Primitive.infect "#{prefix}>", self
     end
 
-    # If it's already been inspected, return the ...
-    return "#{prefix} ...>" if Thread.guarding? self
-
-    parts = Thread.recursion_guard self do
-      ivars.map do |var|
+    Truffle::ThreadOperations.detect_recursion(self) do
+      parts = ivars.map do |var|
         value = Primitive.object_ivar_get self, var
         "#{var}=#{value.inspect}"
       end
+      str = "#{prefix} #{parts.join(', ')}>"
+      return Primitive.infect str, self
     end
 
-    str = "#{prefix} #{parts.join(', ')}>"
-    Primitive.infect str, self
+    # If it's already been inspected, return the ...
+    "#{prefix} ...>"
   end
 
   def load(filename, wrap = false)
@@ -481,18 +487,18 @@ module Kernel
 
   def rand(limit=0)
     if limit == 0
-      return Thread.current.randomizer.random_float
+      return Primitive.thread_randomizer.random_float
     end
 
     if limit.kind_of?(Range)
-      return Thread.current.randomizer.random(limit)
+      return Primitive.thread_randomizer.random(limit)
     else
       limit = Integer(limit).abs
 
       if limit == 0
-        Thread.current.randomizer.random_float
+        Primitive.thread_randomizer.random_float
       else
-        Thread.current.randomizer.random_integer(limit - 1)
+        Primitive.thread_randomizer.random_integer(limit - 1)
       end
     end
   end
@@ -515,11 +521,11 @@ module Kernel
 
   def srand(seed=undefined)
     if Primitive.undefined? seed
-      seed = Thread.current.randomizer.generate_seed
+      seed = Primitive.thread_randomizer.generate_seed
     end
 
     seed = Truffle::Type.coerce_to seed, Integer, :to_int
-    Thread.current.randomizer.swap_seed seed
+    Primitive.thread_randomizer.swap_seed seed
   end
   module_function :srand
 
@@ -636,7 +642,7 @@ module Kernel
   def warn(*messages, uplevel: undefined)
     if !Primitive.nil?($VERBOSE) && !messages.empty?
       prefix = if Primitive.undefined?(uplevel)
-                 +''
+                 ''
                else
                  uplevel = Primitive.rb_to_int(uplevel)
                  raise ArgumentError, "negative level (#{uplevel})" unless uplevel >= 0
@@ -655,13 +661,22 @@ module Kernel
                  if caller
                    "#{caller.path}:#{caller.lineno}: warning: "
                  else
-                   +'warning: '
+                   'warning: '
                  end
                end
 
-      stringio = Truffle::StringOperations::SimpleStringIO.new(prefix)
+      stringio = Truffle::StringOperations::SimpleStringIO.new(+prefix)
       Truffle::IOOperations.puts(stringio, *messages)
-      Warning.warn(stringio.string)
+      message = stringio.string
+
+      if Primitive.object_equal(self, Warning) # avoid recursion when redefining Warning#warn
+        unless message.encoding.ascii_compatible?
+          raise Encoding::CompatibilityError, "ASCII incompatible encoding: #{message.encoding}"
+        end
+        $stderr.write message
+      else
+        Warning.warn(message)
+      end
     end
     nil
   end
@@ -675,7 +690,7 @@ module Kernel
       exc = Truffle::ExceptionOperations.build_exception_for_raise(exc, msg)
 
       exc.set_context ctx if ctx
-      exc.capture_backtrace!(1) unless exc.backtrace?
+      Primitive.exception_capture_backtrace(exc, 1) unless exc.backtrace?
       Primitive.exception_set_cause exc, last unless Primitive.object_equal(exc, last)
     end
 
@@ -754,17 +769,17 @@ module Kernel
   Truffle::Boot.delay do
     if Truffle::Boot.get_option('gets-loop')
       def chomp(separator=$/)
-        last_line = Truffle::IOOperations.last_line(Primitive.caller_binding)
+        last_line = Primitive.io_last_line_get(Primitive.caller_special_variables)
         result = Truffle::KernelOperations.check_last_line(last_line).chomp(separator)
-        Truffle::IOOperations.set_last_line(result, Primitive.caller_binding)
+        Primitive.io_last_line_set(Primitive.caller_special_variables, result)
         result
       end
       module_function :chomp
 
       def chop
-        last_line = Truffle::IOOperations.last_line(Primitive.caller_binding)
+        last_line = Primitive.io_last_line_get(Primitive.caller_special_variables)
         result = Truffle::KernelOperations.check_last_line(last_line).chop
-        Truffle::IOOperations.set_last_line(result, Primitive.caller_binding)
+        Primitive.io_last_line_set(Primitive.caller_special_variables, result)
         result
       end
       module_function :chop

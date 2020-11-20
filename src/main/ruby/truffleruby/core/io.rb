@@ -35,7 +35,6 @@
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 class IO
-  FFI = Truffle::FFI
 
   include Enumerable
 
@@ -87,10 +86,6 @@ class IO
   # equals total, no additional bytes will be filled until the
   # buffer is emptied.
   #
-  # As a write buffer, +empty_to+ removes bytes from +start+ up
-  # to +used+. When +start+ equals +used+, no additional bytes
-  # will be emptied until the buffer is filled.
-  #
   # IO presents a stream of input. Buffer presents buckets of
   # input. IO's task is to chain the buckets so the user sees
   # a stream. IO explicitly requests that the buffer be filled
@@ -108,7 +103,6 @@ class IO
       @start = 0
       @used = 0
       @total = SIZE
-      @write_synced = true
       @eof = false
     end
 
@@ -144,26 +138,6 @@ class IO
       @start = 0
       @used = 0
       @eof = false
-      @write_synced = true
-    end
-
-    def write_synced?
-      @write_synced
-    end
-
-    # Returns the number of bytes that could be written to the buffer.
-    # If the number is less then the expected, then we need to +empty_to+
-    # the IO, and +unshift+ again beginning at +start_pos+.
-    def unshift(str, start_pos)
-      @write_synced = false
-      free = unused
-      written = str.bytesize - start_pos
-      if written > free
-        written = free
-      end
-      @storage.fill(@used, str, start_pos, written)
-      @used += written
-      written
     end
 
     def fill(io, max = DEFAULT_READ_SIZE)
@@ -192,7 +166,6 @@ class IO
     # Returns the number of bytes in the buffer.
     def fill_from(io, skip = nil, max = DEFAULT_READ_SIZE)
       Truffle::System.synchronized(self) do
-        empty_to io
         discard skip if skip
 
         if empty?
@@ -205,16 +178,6 @@ class IO
           Primitive.min(size, max)
         end
       end
-    end
-
-    def empty_to(io)
-      return 0 if @write_synced or empty?
-
-      data = String.from_bytearray(@storage, @start, size, Encoding::ASCII_8BIT)
-      Truffle::POSIX.write_string io, data, true
-      reset!
-
-      size
     end
 
     # Advances the beginning-of-buffer marker past any number
@@ -238,8 +201,6 @@ class IO
 
     def unseek!(io)
       Truffle::System.synchronized(self) do
-        # Unseek the still buffered amount
-        return unless write_synced?
         unless empty?
           amount = @start - @used
           r = Truffle::POSIX.lseek(io.fileno, amount, IO::SEEK_CUR)
@@ -340,21 +301,19 @@ class IO
   end
 
   private def mode_read_only?
-    @mode & ACCMODE == RDONLY
+    @mode == RDONLY
   end
 
   private def mode_write_only?
-    @mode & ACCMODE == WRONLY
+    @mode == WRONLY
   end
 
   private def force_read_only
-    @mode &= ~IO::ACCMODE
-    @mode |= RDONLY
+    @mode = RDONLY
   end
 
   private def force_write_only
-    @mode &= ~IO::ACCMODE
-    @mode |= WRONLY
+    @mode = WRONLY
   end
 
   def self.binread(file, length=nil, offset=0)
@@ -765,7 +724,6 @@ class IO
     when ?t
       ret &= ~BINARY
     when ?:
-      warn 'encoding options not supported in 1.8', uplevel: 1
       return ret
     else
       raise ArgumentError, "invalid mode -- #{mode}"
@@ -782,7 +740,6 @@ class IO
     when ?t
       ret &= ~BINARY
     when ?:
-      warn 'encoding options not supported in 1.8', uplevel: 1
       return ret
     else
       raise ArgumentError, "invalid mode -- #{mode}"
@@ -1026,16 +983,19 @@ class IO
       if cur_mode and (cur_mode == RDONLY or cur_mode == WRONLY) and mode != cur_mode
         raise Errno::EINVAL, "Invalid new mode for existing descriptor #{fd}"
       end
+    else
+      mode = cur_mode or raise 'No mode given for IO'
     end
 
     # Close old descriptor if there was already one associated
-    io.close if io.instance_variable_get(:@descriptor) != -1
+    io.close if Primitive.io_fd(io) != -1
 
-    io.instance_variable_set :@descriptor, fd
-    io.instance_variable_set :@mode, mode || cur_mode
-    io.sync       = !!sync
+    Primitive.io_set_fd(io, fd)
+    io.instance_variable_set :@mode, mode
+    io.sync = !!sync
     io.autoclose  = true
-    io.instance_variable_set :@ibuffer, IO::InternalBuffer.new
+    ibuffer = mode != WRONLY ? IO::InternalBuffer.new : nil
+    io.instance_variable_set :@ibuffer, ibuffer
     io.instance_variable_set :@lineno, 0
 
     # Truffle: STDOUT isn't defined by the time this call is made during bootstrap, so we need to guard it.
@@ -1104,7 +1064,7 @@ class IO
     # The 3rd argument is minimum acceptable descriptor value for the new FD.
     # We want to ensure newly allocated FDs never take the standard IO ones, even
     # if a STDIO stream is closed.
-    @descriptor = Truffle::POSIX.fcntl(fd, F_DUPFD_CLOEXEC, 3)
+    Primitive.io_set_fd(self, Truffle::POSIX.fcntl(fd, F_DUPFD_CLOEXEC, 3))
   end
 
   def advise(advice, offset = 0, len = 0)
@@ -1156,7 +1116,7 @@ class IO
 
   # Used to find out if there is buffered data available.
   private def buffer_empty?
-    @ibuffer.empty?
+    @ibuffer.nil? or @ibuffer.empty?
   end
 
   def close_on_exec=(value)
@@ -1229,7 +1189,7 @@ class IO
   #  f.close_read    #=> nil
   #  f.closed?       #=> true
   def closed?
-    @descriptor == -1
+    Primitive.io_fd(self) == -1
   end
 
   # Argument matrix for IO#gets and IO#each:
@@ -1409,8 +1369,8 @@ class IO
   ##
   # Return a string describing this IO object.
   def inspect
-    if @descriptor != -1
-      "#<#{self.class}:fd #{@descriptor}>"
+    if Primitive.io_fd(self) != -1
+      "#<#{self.class}:fd #{Primitive.io_fd(self)}>"
     else
       "#<#{self.class}:(closed)>"
     end
@@ -1530,18 +1490,16 @@ class IO
 
   private def ensure_open_and_readable
     ensure_open
-    write_only = @mode & ACCMODE == WRONLY
-    raise IOError, 'not opened for reading' if write_only
+    raise IOError, 'not opened for reading' if @mode == WRONLY
   end
 
   private def ensure_open_and_writable
     ensure_open
-    read_only = @mode & ACCMODE == RDONLY
-    raise IOError, 'not opened for writing' if read_only
+    raise IOError, 'not opened for writing' if @mode == RDONLY
   end
 
   def external_encoding
-    if @mode & ACCMODE == RDONLY
+    if @mode == RDONLY
       @external || Encoding.default_external
     else
       @external
@@ -1570,7 +1528,7 @@ class IO
     end
 
     command = Primitive.rb_to_int command
-    Truffle::POSIX.fcntl @descriptor, command, arg
+    Truffle::POSIX.fcntl Primitive.io_fd(self), command, arg
   end
 
   def internal_encoding
@@ -1599,15 +1557,15 @@ class IO
       # Most Linux ioctl codes predate the convention, so a fallback like this
       # is still necessary.
       buffer_size = 4096 if buffer_size < 4096
-      buffer = FFI::MemoryPointer.new(buffer_size)
-      buffer.write_string(arg, arg.bytesize)
+      buffer = Truffle::FFI::MemoryPointer.new(buffer_size)
+      buffer.write_bytes(arg)
       real_arg = buffer.address
     else
       real_arg = Primitive.rb_to_int(arg)
     end
 
     command = Primitive.rb_to_int(command)
-    ret = Truffle::POSIX.ioctl(@descriptor, command, real_arg)
+    ret = Truffle::POSIX.ioctl(Primitive.io_fd(self), command, real_arg)
     Errno.handle if ret < 0
 
     if arg.kind_of?(String)
@@ -1624,7 +1582,7 @@ class IO
   #  $stdout.fileno   #=> 1
   def fileno
     ensure_open
-    @descriptor
+    Primitive.io_fd(self)
   end
   alias_method :to_i, :fileno
 
@@ -1640,7 +1598,6 @@ class IO
   #  no newline
   def flush
     ensure_open
-    @ibuffer.empty_to self
     self
   end
 
@@ -1652,13 +1609,13 @@ class IO
   # that the underlying operating system actually writes it to disk.
   def fsync
     flush
-    err = Truffle::POSIX.fsync @descriptor
+    err = Truffle::POSIX.fsync Primitive.io_fd(self)
     Errno.handle(+'fsync(2)') if err < 0
     err
   end
 
   def getbyte
-    ensure_open
+    ensure_open_and_readable
     @ibuffer.getbyte(self)
   end
 
@@ -1670,7 +1627,7 @@ class IO
   #  f.getc   #=> 84
   #  f.getc   #=> 104
   def getc
-    ensure_open
+    ensure_open_and_readable
     @ibuffer.getchar(self)
   end
 
@@ -1680,7 +1637,7 @@ class IO
       line = l
       break
     end
-    Truffle::IOOperations.set_last_line(line, Primitive.caller_binding) if line
+    Primitive.io_last_line_set(Primitive.caller_special_variables, line) if line
     line
   end
 
@@ -1768,7 +1725,7 @@ class IO
   def pos
     flush
     reset_buffering
-    r = Truffle::POSIX.lseek(@descriptor, 0, SEEK_CUR)
+    r = Truffle::POSIX.lseek(Primitive.io_fd(self), 0, SEEK_CUR)
     Errno.handle if r == -1
     r
   end
@@ -1789,7 +1746,7 @@ class IO
   # IO#gets) if called without arguments. Appends $\.to_s to output. Returns
   # nil.
   def print(*args)
-    Truffle::IOOperations.print self, args, Primitive.caller_binding
+    Truffle::IOOperations.print self, args, Primitive.caller_special_variables
   end
 
   ##
@@ -1904,7 +1861,7 @@ class IO
   # buffer like readpartial. In this case, read(2) is not called.
   def read_nonblock(size, buffer = nil, exception: true)
     raise ArgumentError, 'illegal read size' if size < 0
-    ensure_open
+    ensure_open_and_readable
     self.nonblock = true
 
     buffer = StringValue buffer if buffer
@@ -2026,7 +1983,7 @@ class IO
   # blocks on the situation IO#sysread causes Errno::EAGAIN as if the fd is blocking mode.
   def readpartial(size, buffer=nil)
     raise ArgumentError, 'negative string size' unless size >= 0
-    ensure_open
+    ensure_open_and_readable
 
     if buffer
       buffer = StringValue(buffer)
@@ -2080,17 +2037,18 @@ class IO
         end
       end
 
-      if @descriptor != io.fileno
+      if Primitive.io_fd(self) != io.fileno
         io.__send__ :ensure_open
         io.__send__ :reset_buffering
 
-        Truffle::IOOperations.dup2_with_cloexec(io.fileno, @descriptor)
+        Truffle::IOOperations.dup2_with_cloexec(io.fileno, Primitive.io_fd(self))
 
         Primitive.vm_set_class self, io.class
 
         # We need to use that mode of other here like MRI, and not fcntl(), because fcntl(fd, F_GETFL)
         # gives O_RDWR for the 3 standard IOs, even though they are not bidirectional.
         @mode = other.instance_variable_get :@mode
+        @ibuffer = @mode != WRONLY ? IO::InternalBuffer.new : nil
 
         if io.respond_to?(:path)
           @path = io.path
@@ -2115,19 +2073,20 @@ class IO
       reset_buffering
 
       if closed?
-        @descriptor = IO.sysopen(path, mode)
+        Primitive.io_set_fd(self, IO.sysopen(path, mode))
       else
         File.open(path, mode) do |f|
-          Truffle::IOOperations.dup2_with_cloexec(f.fileno, @descriptor)
+          Truffle::IOOperations.dup2_with_cloexec(f.fileno, Primitive.io_fd(self))
         end
       end
 
       seek 0, SEEK_SET
 
-      mode = Truffle::POSIX.fcntl(@descriptor, F_GETFL, 0)
+      mode = Truffle::POSIX.fcntl(Primitive.io_fd(self), F_GETFL, 0)
       Errno.handle if mode < 0
 
-      @mode = mode
+      @mode = (mode & ACCMODE)
+      @ibuffer = mode != WRONLY ? IO::InternalBuffer.new : nil
     end
 
     self
@@ -2137,7 +2096,7 @@ class IO
   # Internal method used to reset the state of the buffer, including the
   # physical position in the stream.
   private def reset_buffering
-    @ibuffer.unseek! self
+    @ibuffer.unseek! self if @ibuffer
   end
 
   ##
@@ -2172,7 +2131,7 @@ class IO
     flush
     reset_buffering
 
-    r = Truffle::POSIX.lseek(@descriptor, Integer(amount), whence)
+    r = Truffle::POSIX.lseek(Primitive.io_fd(self), Integer(amount), whence)
     Errno.handle if r == -1
     0
   end
@@ -2240,7 +2199,7 @@ class IO
   end
 
   private def strip_bom
-    mode = Truffle::POSIX.truffleposix_fstat_mode(@descriptor)
+    mode = Truffle::POSIX.truffleposix_fstat_mode(Primitive.io_fd(self))
     return unless Truffle::StatOperations.file?(mode)
 
     case b1 = getbyte
@@ -2310,7 +2269,7 @@ class IO
   #  s.atime         #=> Wed Apr 09 08:53:54 CDT 2003
   def stat
     ensure_open
-    File::Stat.fstat @descriptor
+    File::Stat.fstat Primitive.io_fd(self)
   end
 
   ##
@@ -2347,6 +2306,7 @@ class IO
   #  @todo  Improve reading into provided buffer.
   #
   def sysread(number_of_bytes, buffer=undefined)
+    ensure_open_and_readable
     flush
     raise IOError unless @ibuffer.empty?
 
@@ -2370,14 +2330,10 @@ class IO
   #  f.sysread(10)                  #=> "And so on."
   def sysseek(amount, whence=SEEK_SET)
     ensure_open
-    if @ibuffer.write_synced?
-      raise IOError unless @ibuffer.empty?
-    else
-      warn 'sysseek for buffered IO', uplevel: 1
-    end
+    raise IOError unless buffer_empty?
 
     amount = Integer(amount)
-    r = Truffle::POSIX.lseek(@descriptor, amount, whence)
+    r = Truffle::POSIX.lseek(Primitive.io_fd(self), amount, whence)
     Errno.handle if r == -1
     r
   end
@@ -2393,7 +2349,7 @@ class IO
   #  File.new("/dev/tty").isatty   #=> true
   def tty?
     ensure_open
-    Truffle::POSIX.isatty(@descriptor) == 1
+    Truffle::POSIX.isatty(Primitive.io_fd(self)) == 1
   end
   alias_method :isatty, :tty?
 
@@ -2402,7 +2358,7 @@ class IO
     return 0 if data.empty?
 
     ensure_open_and_writable
-    @ibuffer.unseek!(self) unless @sync
+    reset_buffering unless @sync
 
     Truffle::POSIX.write_string(self, data, false)
   end
@@ -2457,19 +2413,7 @@ class IO
       end
     end
 
-    if @sync
-      Truffle::POSIX.write_string self, data, true
-    else
-      reset_buffering
-      bytes_to_write = data.bytesize
-
-      while bytes_to_write > 0
-        bytes_to_write -= @ibuffer.unshift(data, data.bytesize - bytes_to_write)
-        @ibuffer.empty_to self if @ibuffer.full? or sync
-      end
-    end
-
-    data.bytesize
+    Truffle::POSIX.write_string self, data, true
   end
 
   def write_nonblock(data, exception: true)
@@ -2478,7 +2422,7 @@ class IO
     data = String data
     return 0 if data.empty?
 
-    @ibuffer.unseek!(self) unless @sync
+    reset_buffering unless @sync
 
     self.nonblock = true
 
@@ -2499,10 +2443,10 @@ class IO
     begin
       flush
     ensure
-      fd = @descriptor
+      fd = Primitive.io_fd(self)
       if fd >= 0
         # Need to set even if the instance is frozen
-        Primitive.object_ivar_set self, :@descriptor, -1
+        Primitive.io_set_fd(self, -1)
         if fd >= 3 && autoclose?
           ret = Truffle::POSIX.close(fd)
           Errno.handle if ret < 0
@@ -2597,5 +2541,5 @@ end
 
 Truffle::KernelOperations.define_hooked_variable(
   :$_,
-  -> b { Truffle::IOOperations.last_line(b) },
-  -> v, b { Truffle::IOOperations.set_last_line(v, b) })
+  -> s { Primitive.io_last_line_get(s) },
+  -> v, s { Primitive.io_last_line_set(s, v) })

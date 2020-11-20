@@ -9,18 +9,19 @@
  */
 package org.truffleruby.core.hash;
 
+import org.truffleruby.collections.BiConsumerNode;
 import org.truffleruby.core.symbol.RubySymbol;
 import org.truffleruby.language.RubyContextSourceNode;
 import org.truffleruby.language.RubyNode;
 import org.truffleruby.language.control.RaiseException;
 
 import com.oracle.truffle.api.frame.VirtualFrame;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.BranchProfile;
 
-public class EnsureSymbolKeysNode extends RubyContextSourceNode {
+public class EnsureSymbolKeysNode extends RubyContextSourceNode implements BiConsumerNode {
 
     @Child private RubyNode child;
+    @Child private HashNodes.EachKeyValueNode eachKey = HashNodes.EachKeyValueNode.create();
 
     private final BranchProfile errorProfile = BranchProfile.create();
 
@@ -30,15 +31,18 @@ public class EnsureSymbolKeysNode extends RubyContextSourceNode {
 
     @Override
     public Object execute(VirtualFrame frame) {
-        final Object hash = child.execute(frame);
-        for (KeyValue keyValue : HashOperations.iterableKeyValues((DynamicObject) hash)) {
-            if (!(keyValue.getKey() instanceof RubySymbol)) {
-                errorProfile.enter();
-                throw new RaiseException(
-                        getContext(),
-                        coreExceptions().typeErrorWrongArgumentType(keyValue.getKey(), "Symbol", this));
-            }
-        }
+        final RubyHash hash = (RubyHash) child.execute(frame);
+        eachKey.executeEachKeyValue(frame, hash, this, null);
         return hash;
+    }
+
+    @Override
+    public void accept(VirtualFrame frame, Object key, Object value, Object state) {
+        if (!(key instanceof RubySymbol)) {
+            errorProfile.enter();
+            throw new RaiseException(
+                    getContext(),
+                    coreExceptions().typeErrorWrongArgumentType(key, "Symbol", this));
+        }
     }
 }

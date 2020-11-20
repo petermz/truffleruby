@@ -9,11 +9,24 @@
  */
 package org.truffleruby.language;
 
-import org.truffleruby.Layouts;
 import org.truffleruby.core.CoreLibrary;
+import org.truffleruby.core.array.RubyArray;
+import org.truffleruby.core.encoding.RubyEncoding;
+import org.truffleruby.core.klass.RubyClass;
+import org.truffleruby.core.method.RubyMethod;
+import org.truffleruby.core.method.RubyUnboundMethod;
+import org.truffleruby.core.hash.RubyHash;
+import org.truffleruby.core.module.RubyModule;
+import org.truffleruby.core.numeric.RubyBignum;
+import org.truffleruby.core.proc.RubyProc;
+import org.truffleruby.core.range.RubyIntRange;
+import org.truffleruby.core.range.RubyRange;
+import org.truffleruby.core.regexp.RubyMatchData;
+import org.truffleruby.core.regexp.RubyRegexp;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.core.symbol.RubySymbol;
-
-import com.oracle.truffle.api.object.DynamicObject;
+import org.truffleruby.interop.ToJavaStringNode;
+import org.truffleruby.stdlib.bigdecimal.RubyBigDecimal;
 
 public abstract class RubyGuards {
 
@@ -45,6 +58,10 @@ public abstract class RubyGuards {
         return value instanceof String;
     }
 
+    public static boolean isIntOrLong(Object value) {
+        return value instanceof Integer || value instanceof Long;
+    }
+
     public static boolean isBasicInteger(Object object) {
         return object instanceof Byte || object instanceof Short || object instanceof Integer || object instanceof Long;
     }
@@ -68,188 +85,81 @@ public abstract class RubyGuards {
     // Ruby types
 
     public static boolean isRubyBignum(Object value) {
-        return Layouts.BIGNUM.isBignum(value);
-    }
-
-    public static boolean isRubyBignum(DynamicObject value) {
-        return Layouts.BIGNUM.isBignum(value);
+        return value instanceof RubyBignum;
     }
 
     public static boolean isRubyBigDecimal(Object value) {
-        return Layouts.BIG_DECIMAL.isBigDecimal(value);
+        return value instanceof RubyBigDecimal;
     }
 
-    public static boolean isRubyBigDecimal(DynamicObject value) {
-        return Layouts.BIG_DECIMAL.isBigDecimal(value);
-    }
-
-    public static boolean isIntRange(Object object) {
-        return Layouts.INT_RANGE.isIntRange(object);
-    }
-
-    public static boolean isIntRange(DynamicObject object) {
-        return Layouts.INT_RANGE.isIntRange(object);
-    }
-
-    public static boolean isLongRange(Object object) {
-        return Layouts.LONG_RANGE.isLongRange(object);
-    }
-
-    public static boolean isLongRange(DynamicObject object) {
-        return Layouts.LONG_RANGE.isLongRange(object);
-    }
-
-    public static boolean isObjectRange(Object object) {
-        return Layouts.OBJECT_RANGE.isObjectRange(object);
-    }
-
-    public static boolean isEndlessObjectRange(DynamicObject object) {
-        return isObjectRange(object) && Layouts.OBJECT_RANGE.getEnd(object) == Nil.INSTANCE;
-    }
-
-    public static boolean isBoundedObjectRange(DynamicObject object) {
-        return isObjectRange(object) && Layouts.OBJECT_RANGE.getEnd(object) != Nil.INSTANCE;
+    public static boolean isIntRange(Object value) {
+        return value instanceof RubyIntRange;
     }
 
     public static boolean isRubyRange(Object value) {
-        return isIntRange(value) || isLongRange(value) || isObjectRange(value);
+        return value instanceof RubyRange;
     }
 
     public static boolean isRubyArray(Object value) {
-        return Layouts.ARRAY.isArray(value);
-    }
-
-    public static boolean isRubyArray(DynamicObject value) {
-        return Layouts.ARRAY.isArray(value);
-    }
-
-    public static boolean isRubyBinding(DynamicObject object) {
-        return Layouts.BINDING.isBinding(object);
+        return value instanceof RubyArray;
     }
 
     public static boolean isRubyClass(Object value) {
-        return Layouts.CLASS.isClass(value);
-    }
-
-    public static boolean isRubyClass(DynamicObject value) {
-        return Layouts.CLASS.isClass(value);
+        return value instanceof RubyClass;
     }
 
     public static boolean isRubyHash(Object value) {
-        return Layouts.HASH.isHash(value);
-    }
-
-    public static boolean isRubyHash(DynamicObject value) {
-        return Layouts.HASH.isHash(value);
+        return value instanceof RubyHash;
     }
 
     public static boolean isRubyModule(Object value) {
-        return Layouts.MODULE.isModule(value);
-    }
-
-    public static boolean isRubyModule(DynamicObject value) {
-        return Layouts.MODULE.isModule(value);
+        return value instanceof RubyModule;
     }
 
     public static boolean isRubyRegexp(Object value) {
-        return Layouts.REGEXP.isRegexp(value);
-    }
-
-    public static boolean isRubyRegexp(DynamicObject value) {
-        return Layouts.REGEXP.isRegexp(value);
+        return value instanceof RubyRegexp;
     }
 
     public static boolean isRubyString(Object value) {
-        return Layouts.STRING.isString(value);
-    }
-
-    public static boolean isRubyString(DynamicObject value) {
-        return Layouts.STRING.isString(value);
-    }
-
-    public static boolean isRubyEncoding(Object object) {
-        return Layouts.ENCODING.isEncoding(object);
-    }
-
-    public static boolean isRubyEncoding(DynamicObject object) {
-        return Layouts.ENCODING.isEncoding(object);
+        return value instanceof RubyString;
     }
 
     public static boolean isRubySymbol(Object value) {
         return value instanceof RubySymbol;
     }
 
-    public static boolean isRubyMethod(Object value) {
-        return Layouts.METHOD.isMethod(value);
+    /** Should be used only for interop together with {@link ToJavaStringNode} */
+    public static boolean isRubySymbolOrString(Object value) {
+        return isRubySymbol(value) || isRubyString(value);
     }
 
-    public static boolean isRubyMethod(DynamicObject value) {
-        return Layouts.METHOD.isMethod(value);
+    public static boolean isRubyEncoding(Object object) {
+        return object instanceof RubyEncoding;
+    }
+
+    public static boolean isRubyMethod(Object value) {
+        return value instanceof RubyMethod;
     }
 
     public static boolean isRubyUnboundMethod(Object value) {
-        return Layouts.UNBOUND_METHOD.isUnboundMethod(value);
-    }
-
-    public static boolean isRubyUnboundMethod(DynamicObject value) {
-        return Layouts.UNBOUND_METHOD.isUnboundMethod(value);
-    }
-
-    public static boolean isDynamicObject(Object value) {
-        return value instanceof DynamicObject;
-    }
-
-    public static boolean isRubyPointer(DynamicObject value) {
-        return Layouts.POINTER.isPointer(value);
-    }
-
-    public static boolean isByteArray(DynamicObject value) {
-        return Layouts.BYTE_ARRAY.isByteArray(value);
+        return value instanceof RubyUnboundMethod;
     }
 
     public static boolean isRubyProc(Object object) {
-        return Layouts.PROC.isProc(object);
+        return object instanceof RubyProc;
     }
 
-    public static boolean isRubyProc(DynamicObject object) {
-        return Layouts.PROC.isProc(object);
-    }
-
-    public static boolean isRubyEncodingConverter(DynamicObject encodingConverter) {
-        return Layouts.ENCODING_CONVERTER.isEncodingConverter(encodingConverter);
-    }
-
-    public static boolean isRubyTime(DynamicObject object) {
-        return Layouts.TIME.isTime(object);
-    }
-
-    public static boolean isRubyException(DynamicObject object) {
-        return Layouts.EXCEPTION.isException(object);
-    }
-
-    public static boolean isRubyFiber(DynamicObject object) {
-        return Layouts.FIBER.isFiber(object);
-    }
-
-    public static boolean isRubyThread(DynamicObject object) {
-        return Layouts.THREAD.isThread(object);
-    }
-
-    public static boolean isRubyMatchData(DynamicObject object) {
-        return Layouts.MATCH_DATA.isMatchData(object);
-    }
-
-    public static boolean isHandle(DynamicObject object) {
-        return Layouts.HANDLE.isHandle(object);
+    public static boolean isRubyMatchData(Object object) {
+        return object instanceof RubyMatchData;
     }
 
     public static boolean isRubyInteger(Object object) {
-        return isBasicInteger(object) || isRubyBignum(object);
+        return isBasicInteger(object) || object instanceof RubyBignum;
     }
 
     public static boolean isRubyNumber(Object object) {
         // Doesn't include classes like BigDecimal
-        return isBasicNumber(object) || isRubyBignum(object);
+        return isBasicNumber(object) || object instanceof RubyBignum;
     }
 
     public static boolean isNil(Object object) {
@@ -259,12 +169,11 @@ public abstract class RubyGuards {
     // Internal types
 
     public static boolean isRubyDynamicObject(Object object) {
-        return Layouts.BASIC_OBJECT.isBasicObject(object);
+        return object instanceof RubyDynamicObject;
     }
 
     public static boolean isRubyValue(Object object) {
-        return isRubyDynamicObject(object) || isPrimitive(object) || object instanceof Nil ||
-                object instanceof RubySymbol;
+        return object instanceof RubyDynamicObject || object instanceof ImmutableRubyObject || isPrimitive(object);
     }
 
     public static boolean isForeignObject(Object object) {
@@ -274,7 +183,7 @@ public abstract class RubyGuards {
     // Sentinels
 
     public static boolean wasProvided(Object value) {
-        return !(wasNotProvided(value));
+        return !wasNotProvided(value);
     }
 
     public static boolean wasNotProvided(Object value) {
@@ -305,12 +214,12 @@ public abstract class RubyGuards {
 
     // Composite
 
-    public static boolean isSingletonClass(DynamicObject value) {
-        return isRubyClass(value) && Layouts.CLASS.getIsSingleton(value);
+    public static boolean isSingletonClass(RubyModule value) {
+        return value instanceof RubyClass && ((RubyClass) value).isSingleton;
     }
 
-    public static boolean isMetaClass(DynamicObject value) {
-        return isSingletonClass(value) && RubyGuards.isRubyModule(Layouts.CLASS.getAttached(value));
+    public static boolean isMetaClass(RubyModule value) {
+        return isSingletonClass(value) && ((RubyClass) value).attached instanceof RubyModule;
     }
 
     // Arguments

@@ -40,19 +40,18 @@ import java.math.BigDecimal;
 import java.math.MathContext;
 import java.math.RoundingMode;
 
-import com.oracle.truffle.api.CompilerDirectives;
-import org.truffleruby.Layouts;
 import org.truffleruby.core.numeric.BigDecimalOps;
+import org.truffleruby.core.numeric.RubyBignum;
 import org.truffleruby.language.RubyContextNode;
 import org.truffleruby.language.RubyGuards;
-import org.truffleruby.language.dispatch.CallDispatchHeadNode;
+import org.truffleruby.language.dispatch.DispatchNode;
 import org.truffleruby.language.objects.IsANode;
 
+import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.ImportStatic;
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.object.DynamicObject;
 
 @ImportStatic(BigDecimalCoreMethodNode.class)
 public abstract class BigDecimalCastNode extends RubyContextNode {
@@ -78,26 +77,26 @@ public abstract class BigDecimalCastNode extends RubyContextNode {
         return BigDecimal.valueOf(value);
     }
 
-    @Specialization(guards = "isRubyBignum(value)")
-    protected BigDecimal doBignum(DynamicObject value, int digits, RoundingMode roundingMode) {
+    @Specialization
+    protected BigDecimal doBignum(RubyBignum value, int digits, RoundingMode roundingMode) {
         return BigDecimalOps.fromBigInteger(value);
     }
 
-    @Specialization(guards = "isNormalRubyBigDecimal(value)")
-    protected BigDecimal doBigDecimal(DynamicObject value, int digits, RoundingMode roundingMode) {
-        return Layouts.BIG_DECIMAL.getValue(value);
+    @Specialization(guards = "isNormal(value)")
+    protected BigDecimal doBigDecimal(RubyBigDecimal value, int digits, RoundingMode roundingMode) {
+        return value.value;
     }
 
-    @Specialization(guards = "isSpecialRubyBigDecimal(value)")
-    protected DynamicObject doSpecialBigDecimal(DynamicObject value, int digits, RoundingMode roundingMode) {
+    @Specialization(guards = "isSpecial(value)")
+    protected RubyBigDecimal doSpecialBigDecimal(RubyBigDecimal value, int digits, RoundingMode roundingMode) {
         return value;
     }
 
     @Specialization(guards = { "!isRubyNumber(value)", "!isRubyBigDecimal(value)" })
     protected Object doOther(Object value, int digits, RoundingMode roundingMode,
             @Cached IsANode isRationalNode,
-            @Cached("createPrivate()") CallDispatchHeadNode numeratorCallNode,
-            @Cached("createPrivate()") CallDispatchHeadNode denominatorCallNode) {
+            @Cached DispatchNode numeratorCallNode,
+            @Cached DispatchNode denominatorCallNode) {
         if (isRationalNode.executeIsA(value, coreLibrary().rationalClass)) {
             final Object numerator = numeratorCallNode.call(value, "numerator");
             final Object denominator = denominatorCallNode.call(value, "denominator");
@@ -137,8 +136,8 @@ public abstract class BigDecimalCastNode extends RubyContextNode {
             return BigDecimal.valueOf((float) object);
         } else if (object instanceof Double) {
             return BigDecimal.valueOf((double) object);
-        } else if (RubyGuards.isRubyBignum(object)) {
-            return new BigDecimal(Layouts.BIGNUM.getValue((DynamicObject) object));
+        } else if (object instanceof RubyBignum) {
+            return new BigDecimal(((RubyBignum) object).value);
         } else {
             throw CompilerDirectives.shouldNotReachHere();
         }

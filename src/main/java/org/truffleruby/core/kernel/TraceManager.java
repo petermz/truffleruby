@@ -13,17 +13,16 @@ import java.util.ArrayList;
 import java.util.Collection;
 
 import org.truffleruby.RubyContext;
+import org.truffleruby.RubyLanguage;
 import org.truffleruby.core.binding.BindingNodes;
-import org.truffleruby.core.string.StringOperations;
+import org.truffleruby.core.klass.RubyClass;
+import org.truffleruby.core.proc.RubyProc;
 import org.truffleruby.core.tracepoint.TraceBaseEventNode;
 import org.truffleruby.language.Nil;
-import org.truffleruby.language.RubyGuards;
 import org.truffleruby.language.arguments.RubyArguments;
-import org.truffleruby.language.backtrace.BacktraceFormatter;
 import org.truffleruby.language.objects.LogicalClassNode;
 import org.truffleruby.shared.TruffleRuby;
 
-import com.oracle.truffle.api.Assumption;
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.frame.VirtualFrame;
@@ -32,10 +31,7 @@ import com.oracle.truffle.api.instrumentation.EventContext;
 import com.oracle.truffle.api.instrumentation.Instrumenter;
 import com.oracle.truffle.api.instrumentation.SourceSectionFilter;
 import com.oracle.truffle.api.instrumentation.Tag;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.ConditionProfile;
-import com.oracle.truffle.api.source.SourceSection;
-import com.oracle.truffle.api.utilities.CyclicAssumption;
 
 public class TraceManager {
     public static class LineTag extends Tag {
@@ -52,25 +48,20 @@ public class TraceManager {
     }
 
     private final RubyContext context;
+    private final RubyLanguage language;
     private final Instrumenter instrumenter;
-    private final CyclicAssumption unusedAssumption;
 
     private Collection<EventBinding<?>> instruments;
     private boolean isInTraceFunc = false;
 
-    public TraceManager(RubyContext context, Instrumenter instrumenter) {
+    public TraceManager(RubyLanguage language, RubyContext context, Instrumenter instrumenter) {
+        this.language = language;
         this.context = context;
         this.instrumenter = instrumenter;
-        this.unusedAssumption = new CyclicAssumption("set_trace_func is not used");
-    }
-
-    public Assumption getUnusedAssumption() {
-        return unusedAssumption.getAssumption();
     }
 
     @TruffleBoundary
-    public synchronized void setTraceFunc(DynamicObject traceFunc) {
-        assert traceFunc == null || RubyGuards.isRubyProc(traceFunc);
+    public synchronized void setTraceFunc(RubyProc traceFunc) {
 
         if (instruments != null) {
             for (EventBinding<?> instrument : instruments) {
@@ -80,13 +71,13 @@ public class TraceManager {
 
         if (traceFunc == null) {
             // Update to a new valid assumption
-            unusedAssumption.invalidate();
+            language.traceFuncUnusedAssumption.invalidate();
             instruments = null;
             return;
         }
 
         // Invalidate current assumption
-        unusedAssumption.getAssumption().invalidate();
+        language.traceFuncUnusedAssumption.getAssumption().invalidate();
 
         instruments = new ArrayList<>();
 
@@ -97,7 +88,7 @@ public class TraceManager {
                                 context,
                                 eventContext,
                                 traceFunc,
-                                context.getCoreStrings().LINE.createInstance())));
+                                context.getCoreStrings().LINE.createInstance(context))));
 
         instruments.add(
                 instrumenter.attachExecutionEventFactory(
@@ -110,7 +101,7 @@ public class TraceManager {
                                 context,
                                 eventContext,
                                 traceFunc,
-                                context.getCoreStrings().CLASS.createInstance())));
+                                context.getCoreStrings().CLASS.createInstance(context))));
 
         if (context.getOptions().TRACE_CALLS) {
             instruments.add(
@@ -125,7 +116,7 @@ public class TraceManager {
                                     context,
                                     eventContext,
                                     traceFunc,
-                                    context.getCoreStrings().CALL.createInstance())));
+                                    context.getCoreStrings().CALL.createInstance(context))));
         }
     }
 
@@ -133,13 +124,13 @@ public class TraceManager {
 
         protected final ConditionProfile inTraceFuncProfile = ConditionProfile.create();
 
-        protected final DynamicObject traceFunc;
+        protected final RubyProc traceFunc;
         protected final Object event;
 
         public BaseEventEventNode(
                 RubyContext context,
                 EventContext eventContext,
-                DynamicObject traceFunc,
+                RubyProc traceFunc,
                 Object event) {
             super(context, eventContext);
             this.traceFunc = traceFunc;
@@ -179,7 +170,7 @@ public class TraceManager {
         public CallEventEventNode(
                 RubyContext context,
                 EventContext eventContext,
-                DynamicObject traceFunc,
+                RubyProc traceFunc,
                 Object event) {
             super(context, eventContext, traceFunc, event);
         }
@@ -190,27 +181,13 @@ public class TraceManager {
                 return;
             }
 
-            final SourceSection sourceSection = context.getCallStack().getTopMostUserSourceSection();
-
-            final DynamicObject file;
-            final int line;
-
-            if (BacktraceFormatter.isAvailable(sourceSection)) {
-                file = StringOperations
-                        .createString(context, context.getPathToRopeCache().getCachedPath(sourceSection.getSource()));
-                line = getLine(sourceSection);
-            } else {
-                file = context.getCoreStrings().INTERNAL.createInstance();
-                line = -1;
-            }
-
             isInTraceFunc = true;
             try {
                 yield(
                         traceFunc,
                         event,
-                        file,
-                        line,
+                        getFile(),
+                        getLine(),
                         context.getSymbol(RubyArguments.getMethod(frame).getName()),
                         BindingNodes.createBinding(
                                 context,
@@ -222,12 +199,7 @@ public class TraceManager {
             }
         }
 
-        @TruffleBoundary
-        private int getLine(SourceSection sourceSection) {
-            return sourceSection.getStartLine();
-        }
-
-        private DynamicObject getLogicalClass(Object object) {
+        private RubyClass getLogicalClass(Object object) {
             if (logicalClassNode == null) {
                 CompilerDirectives.transferToInterpreterAndInvalidate();
                 logicalClassNode = insert(LogicalClassNode.create());

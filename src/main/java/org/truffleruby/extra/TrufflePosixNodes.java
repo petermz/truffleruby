@@ -12,12 +12,11 @@ package org.truffleruby.extra;
 import org.truffleruby.builtins.CoreMethodArrayArgumentsNode;
 import org.truffleruby.builtins.CoreModule;
 import org.truffleruby.builtins.Primitive;
-import org.truffleruby.core.string.StringOperations;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.core.time.GetTimeZoneNode;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.object.DynamicObject;
 
 @CoreModule(value = "Truffle::POSIX", isClass = true)
 public abstract class TrufflePosixNodes {
@@ -33,9 +32,9 @@ public abstract class TrufflePosixNodes {
     public abstract static class InvalidateEnvNode extends CoreMethodArrayArgumentsNode {
 
         @TruffleBoundary
-        @Specialization(guards = "isRubyString(envVar)")
-        protected DynamicObject invalidate(DynamicObject envVar) {
-            invalidateENV(StringOperations.getString(envVar));
+        @Specialization
+        protected RubyString invalidate(RubyString envVar) {
+            invalidateENV(envVar.getJavaString());
             return envVar;
         }
 

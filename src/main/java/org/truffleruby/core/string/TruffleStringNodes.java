@@ -9,20 +9,16 @@
  */
 package org.truffleruby.core.string;
 
-import static org.truffleruby.core.string.StringOperations.rope;
-
 import org.truffleruby.builtins.CoreMethod;
 import org.truffleruby.builtins.CoreMethodArrayArgumentsNode;
 import org.truffleruby.builtins.CoreModule;
 import org.truffleruby.core.rope.Rope;
 import org.truffleruby.core.rope.RopeNodes;
-import org.truffleruby.language.RubyGuards;
 import org.truffleruby.language.control.RaiseException;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.object.DynamicObject;
 
 @CoreModule("Truffle::StringOperations")
 public class TruffleStringNodes {
@@ -32,40 +28,33 @@ public class TruffleStringNodes {
 
         @Specialization(guards = { "newByteLength < 0" })
         @TruffleBoundary
-        protected DynamicObject truncateLengthNegative(DynamicObject string, int newByteLength) {
+        protected RubyString truncateLengthNegative(RubyString string, int newByteLength) {
             throw new RaiseException(
                     getContext(),
                     getContext().getCoreExceptions().argumentError(formatNegativeError(newByteLength), this));
         }
 
         @Specialization(
-                guards = { "newByteLength >= 0", "isRubyString(string)", "isNewLengthTooLarge(string, newByteLength)" })
+                guards = { "newByteLength >= 0", "isNewLengthTooLarge(string, newByteLength)" })
         @TruffleBoundary
-        protected DynamicObject truncateLengthTooLong(DynamicObject string, int newByteLength) {
+        protected RubyString truncateLengthTooLong(RubyString string, int newByteLength) {
             throw new RaiseException(
                     getContext(),
-                    getContext()
-                            .getCoreExceptions()
-                            .argumentError(formatTooLongError(newByteLength, rope(string)), this));
+                    coreExceptions().argumentError(formatTooLongError(newByteLength, string.rope), this));
         }
 
         @Specialization(
                 guards = {
                         "newByteLength >= 0",
-                        "isRubyString(string)",
                         "!isNewLengthTooLarge(string, newByteLength)" })
-        protected DynamicObject stealStorage(DynamicObject string, int newByteLength,
+        protected RubyString stealStorage(RubyString string, int newByteLength,
                 @Cached RopeNodes.SubstringNode substringNode) {
-
-            StringOperations.setRope(string, substringNode.executeSubstring(rope(string), 0, newByteLength));
-
+            StringOperations.setRope(string, substringNode.executeSubstring(string.rope, 0, newByteLength));
             return string;
         }
 
-        protected static boolean isNewLengthTooLarge(DynamicObject string, int newByteLength) {
-            assert RubyGuards.isRubyString(string);
-
-            return newByteLength > rope(string).byteLength();
+        protected static boolean isNewLengthTooLarge(RubyString string, int newByteLength) {
+            return newByteLength > string.rope.byteLength();
         }
 
         @TruffleBoundary

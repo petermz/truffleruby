@@ -10,7 +10,9 @@
 package org.truffleruby.core.inlined;
 
 import org.truffleruby.RubyContext;
+import org.truffleruby.RubyLanguage;
 import org.truffleruby.core.array.ArrayUtils;
+import org.truffleruby.core.proc.RubyProc;
 import org.truffleruby.language.RubyContextSourceNode;
 import org.truffleruby.language.RubyNode;
 import org.truffleruby.language.dispatch.RubyCallNode;
@@ -20,7 +22,6 @@ import com.oracle.truffle.api.Assumption;
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.nodes.NodeUtil;
-import com.oracle.truffle.api.object.DynamicObject;
 
 public abstract class InlinedOperationNode extends RubyContextSourceNode {
 
@@ -31,13 +32,13 @@ public abstract class InlinedOperationNode extends RubyContextSourceNode {
     private RubyCallNode replacedBy = null;
 
     public InlinedOperationNode(
-            RubyContext context,
+            RubyLanguage language,
             RubyCallNodeParameters callNodeParameters,
             Assumption... assumptions) {
         this.callNodeParameters = callNodeParameters;
 
         this.assumptions = new Assumption[1 + assumptions.length];
-        this.assumptions[0] = context.getTraceManager().getUnusedAssumption();
+        this.assumptions[0] = language.traceFuncUnusedAssumption.getAssumption();
         ArrayUtils.arraycopy(assumptions, 0, this.assumptions, 1, assumptions.length);
     }
 
@@ -74,7 +75,7 @@ public abstract class InlinedOperationNode extends RubyContextSourceNode {
         return rewriteAndCallWithBlock(frame, receiver, null, arguments);
     }
 
-    protected Object rewriteAndCallWithBlock(VirtualFrame frame, Object receiver, DynamicObject block,
+    protected Object rewriteAndCallWithBlock(VirtualFrame frame, Object receiver, RubyProc block,
             Object... arguments) {
         return rewriteToCallNode().executeWithArgumentsEvaluated(frame, receiver, block, arguments);
     }

@@ -61,16 +61,14 @@
  */
 package org.truffleruby.core.support;
 
-import static org.truffleruby.core.string.StringOperations.rope;
-
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.Arrays;
 
-import com.oracle.truffle.api.CompilerDirectives;
+import com.oracle.truffle.api.dsl.CachedLanguage;
 import org.jcodings.specific.ASCIIEncoding;
-import org.truffleruby.Layouts;
+import org.truffleruby.RubyLanguage;
 import org.truffleruby.builtins.CoreMethod;
 import org.truffleruby.builtins.CoreMethodArrayArgumentsNode;
 import org.truffleruby.builtins.CoreModule;
@@ -78,52 +76,76 @@ import org.truffleruby.builtins.NonStandard;
 import org.truffleruby.builtins.Primitive;
 import org.truffleruby.builtins.PrimitiveArrayArgumentsNode;
 import org.truffleruby.builtins.UnaryCoreMethodNode;
+import org.truffleruby.core.klass.RubyClass;
 import org.truffleruby.core.rope.CodeRange;
 import org.truffleruby.core.rope.Rope;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.core.string.StringNodes.MakeStringNode;
 import org.truffleruby.core.thread.GetCurrentRubyThreadNode;
+import org.truffleruby.core.thread.RubyThread;
 import org.truffleruby.core.thread.ThreadLocalBuffer;
 import org.truffleruby.core.thread.ThreadManager.BlockingAction;
 import org.truffleruby.extra.ffi.Pointer;
+import org.truffleruby.extra.ffi.RubyPointer;
 import org.truffleruby.language.Visibility;
-import org.truffleruby.language.control.JavaException;
 import org.truffleruby.language.control.RaiseException;
-import org.truffleruby.language.objects.AllocateObjectNode;
+import org.truffleruby.language.objects.AllocateHelperNode;
 import org.truffleruby.platform.Platform;
 
+import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.frame.VirtualFrame;
-import com.oracle.truffle.api.object.DynamicObject;
+import com.oracle.truffle.api.object.Shape;
 import com.oracle.truffle.api.profiles.BranchProfile;
 import com.oracle.truffle.api.profiles.ConditionProfile;
 
 @CoreModule(value = "IO", isClass = true)
 public abstract class IONodes {
 
-    private static final int CLOSED_FD = -1;
-
     @CoreMethod(names = { "__allocate__", "__layout_allocate__" }, constructor = true, visibility = Visibility.PRIVATE)
     public static abstract class AllocateNode extends UnaryCoreMethodNode {
 
-        @Child private AllocateObjectNode allocateNode = AllocateObjectNode.create();
+        @Child private AllocateHelperNode allocateNode = AllocateHelperNode.create();
 
         @Specialization
-        protected DynamicObject allocate(VirtualFrame frame, DynamicObject classToAllocate) {
-            return allocateNode.allocate(classToAllocate, CLOSED_FD);
+        protected RubyIO allocate(RubyClass rubyClass,
+                @CachedLanguage RubyLanguage language) {
+            final Shape shape = allocateNode.getCachedShape(rubyClass);
+            final RubyIO instance = new RubyIO(rubyClass, shape, RubyIO.CLOSED_FD);
+            allocateNode.trace(instance, this, language);
+            return instance;
         }
 
+    }
+
+    @Primitive(name = "io_fd")
+    public static abstract class IOFDNode extends PrimitiveArrayArgumentsNode {
+
+        @Specialization
+        protected int fd(RubyIO io) {
+            return io.getDescriptor();
+        }
+    }
+
+    @Primitive(name = "io_set_fd", lowerFixnum = 1)
+    public static abstract class IOSetFDNode extends PrimitiveArrayArgumentsNode {
+
+        @Specialization
+        protected RubyIO fd(RubyIO io, int fd) {
+            io.setDescriptor(fd);
+            return io;
+        }
     }
 
     @Primitive(name = "file_fnmatch", lowerFixnum = 2)
     public static abstract class FileFNMatchPrimitiveNode extends PrimitiveArrayArgumentsNode {
 
         @TruffleBoundary
-        @Specialization(guards = { "isRubyString(pattern)", "isRubyString(path)" })
-        protected boolean fnmatch(DynamicObject pattern, DynamicObject path, int flags) {
-            final Rope patternRope = rope(pattern);
-            final Rope pathRope = rope(path);
+        @Specialization
+        protected boolean fnmatch(RubyString pattern, RubyString path, int flags) {
+            final Rope patternRope = pattern.rope;
+            final Rope pathRope = path.rope;
 
             return fnmatch(
                     patternRope.getBytes(),
@@ -397,10 +419,10 @@ public abstract class IONodes {
     public static abstract class IOEnsureOpenPrimitiveNode extends CoreMethodArrayArgumentsNode {
 
         @Specialization
-        protected Object ensureOpen(DynamicObject file,
+        protected Object ensureOpen(RubyIO io,
                 @Cached BranchProfile errorProfile) {
-            final int fd = Layouts.IO.getDescriptor(file);
-            if (fd == CLOSED_FD) {
+            final int fd = io.getDescriptor();
+            if (fd == RubyIO.CLOSED_FD) {
                 errorProfile.enter();
                 throw new RaiseException(getContext(), coreExceptions().ioError("closed stream", this));
             } else {
@@ -424,7 +446,7 @@ public abstract class IONodes {
                 try {
                     return stream.read(buffer, 0, length);
                 } catch (IOException e) {
-                    throw new JavaException(e);
+                    throw new RaiseException(getContext(), coreExceptions().ioError(e, this));
                 }
             });
 
@@ -448,8 +470,8 @@ public abstract class IONodes {
     public static abstract class IOWritePolyglotNode extends PrimitiveArrayArgumentsNode {
 
         @TruffleBoundary
-        @Specialization(guards = "isRubyString(string)")
-        protected int write(int fd, DynamicObject string) {
+        @Specialization
+        protected int write(int fd, RubyString string) {
             final OutputStream stream;
 
             switch (fd) {
@@ -464,14 +486,14 @@ public abstract class IONodes {
                     throw CompilerDirectives.shouldNotReachHere();
             }
 
-            final Rope rope = rope(string);
+            final Rope rope = string.rope;
             final byte[] bytes = rope.getBytes();
 
             getContext().getThreadManager().runUntilResult(this, () -> {
                 try {
                     stream.write(bytes);
                 } catch (IOException e) {
-                    throw new JavaException(e);
+                    throw new RaiseException(getContext(), coreExceptions().ioError(e, this));
                 }
                 return BlockingAction.SUCCESS;
             });
@@ -484,22 +506,26 @@ public abstract class IONodes {
     @Primitive(name = "io_thread_buffer_allocate")
     public static abstract class IOThreadBufferAllocateNode extends PrimitiveArrayArgumentsNode {
 
+        @Child private AllocateHelperNode allocateNode = AllocateHelperNode.create();
+
         @Specialization
-        protected DynamicObject getThreadBuffer(long size,
-                @Cached AllocateObjectNode allocateObjectNode,
+        protected RubyPointer getThreadBuffer(long size,
                 @Cached GetCurrentRubyThreadNode currentThreadNode,
-                @Cached ConditionProfile sizeProfile) {
-            DynamicObject thread = currentThreadNode.execute();
-            return allocateObjectNode
-                    .allocate(
-                            getContext().getCoreLibrary().truffleFFIPointerClass,
-                            getBuffer(thread, size, sizeProfile));
+                @Cached ConditionProfile sizeProfile,
+                @CachedLanguage RubyLanguage language) {
+            RubyThread thread = currentThreadNode.execute();
+            final RubyPointer instance = new RubyPointer(
+                    coreLibrary().truffleFFIPointerClass,
+                    RubyLanguage.truffleFFIPointerShape,
+                    getBuffer(thread, size, sizeProfile));
+            allocateNode.trace(instance, this, language);
+            return instance;
         }
 
-        public static Pointer getBuffer(DynamicObject rubyThread, long size, ConditionProfile sizeProfile) {
-            final ThreadLocalBuffer buffer = Layouts.THREAD.getIoBuffer(rubyThread);
+        public static Pointer getBuffer(RubyThread rubyThread, long size, ConditionProfile sizeProfile) {
+            final ThreadLocalBuffer buffer = rubyThread.ioBuffer;
             final ThreadLocalBuffer newBuffer = buffer.allocate(size, sizeProfile);
-            Layouts.THREAD.setIoBuffer(rubyThread, newBuffer);
+            rubyThread.ioBuffer = newBuffer;
             return newBuffer.start;
         }
 
@@ -509,13 +535,13 @@ public abstract class IONodes {
     public static abstract class IOThreadBufferFreeNode extends PrimitiveArrayArgumentsNode {
 
         @Specialization
-        protected Object getThreadBuffer(DynamicObject pointer,
+        protected Object getThreadBuffer(RubyPointer pointer,
                 @Cached GetCurrentRubyThreadNode currentThreadNode,
                 @Cached("createBinaryProfile()") ConditionProfile freeProfile) {
-            DynamicObject thread = currentThreadNode.execute();
-            final ThreadLocalBuffer threadBuffer = Layouts.THREAD.getIoBuffer(thread);
-            assert threadBuffer.start.getAddress() == Layouts.POINTER.getPointer(pointer).getAddress();
-            Layouts.THREAD.setIoBuffer(thread, threadBuffer.free(freeProfile));
+            RubyThread thread = currentThreadNode.execute();
+            final ThreadLocalBuffer threadBuffer = thread.ioBuffer;
+            assert threadBuffer.start.getAddress() == pointer.pointer.getAddress();
+            thread.ioBuffer = threadBuffer.free(freeProfile);
             return nil;
         }
     }

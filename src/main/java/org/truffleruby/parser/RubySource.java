@@ -11,6 +11,7 @@ package org.truffleruby.parser;
 
 import java.util.Objects;
 
+import com.oracle.truffle.api.source.SourceSection;
 import org.truffleruby.RubyContext;
 import org.truffleruby.core.rope.Rope;
 
@@ -24,18 +25,29 @@ public class RubySource {
      * for non-file Sources in the future (but then we'll need to still use this path in Ruby backtraces). */
     private final String sourcePath;
     private final Rope sourceRope;
+    private final boolean isEval;
+    private final int lineOffset;
 
     public RubySource(Source source, String sourcePath) {
-        this(source, sourcePath, null);
+        this(source, sourcePath, null, false);
     }
 
     public RubySource(Source source, String sourcePath, Rope sourceRope) {
-        assert RubyContext.getPath(source).equals(sourcePath) : RubyContext.getPath(source) + " vs " + sourcePath;
+        this(source, sourcePath, sourceRope, false);
+    }
 
+    public RubySource(Source source, String sourcePath, Rope sourceRope, boolean isEval) {
+        this(source, sourcePath, sourceRope, isEval, 0);
+    }
+
+    public RubySource(Source source, String sourcePath, Rope sourceRope, boolean isEval, int lineOffset) {
+        assert RubyContext.getPath(source).equals(sourcePath) : RubyContext.getPath(source) + " vs " + sourcePath;
         this.source = Objects.requireNonNull(source);
         //intern() to improve footprint
         this.sourcePath = Objects.requireNonNull(sourcePath).intern();
         this.sourceRope = sourceRope;
+        this.isEval = isEval;
+        this.lineOffset = lineOffset;
     }
 
     public Source getSource() {
@@ -48,6 +60,23 @@ public class RubySource {
 
     public Rope getRope() {
         return sourceRope;
+    }
+
+    public boolean isEval() {
+        return isEval;
+    }
+
+    public int getLineOffset() {
+        return lineOffset;
+    }
+
+    public static int getStartLineAdjusted(RubyContext context, SourceSection sourceSection) {
+        final Integer lineOffset = context.getSourceLineOffsets().get(sourceSection.getSource());
+        if (lineOffset != null) {
+            return sourceSection.getStartLine() + lineOffset;
+        } else {
+            return sourceSection.getStartLine();
+        }
     }
 
 }

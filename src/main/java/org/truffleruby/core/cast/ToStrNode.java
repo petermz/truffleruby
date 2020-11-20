@@ -10,44 +10,42 @@
 
 package org.truffleruby.core.cast;
 
-import org.truffleruby.Layouts;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.language.RubyContextSourceNode;
 import org.truffleruby.language.RubyGuards;
 import org.truffleruby.language.RubyNode;
 import org.truffleruby.language.control.RaiseException;
-import org.truffleruby.language.dispatch.CallDispatchHeadNode;
+import org.truffleruby.language.dispatch.DispatchNode;
 
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.NodeChild;
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.frame.VirtualFrame;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.BranchProfile;
 
 @NodeChild(value = "child", type = RubyNode.class)
 public abstract class ToStrNode extends RubyContextSourceNode {
 
-    public abstract DynamicObject executeToStr(VirtualFrame frame, Object object);
+    public abstract RubyString executeToStr(Object object);
 
     public static ToStrNode create() {
         return ToStrNodeGen.create(null);
     }
 
-    @Specialization(guards = "isRubyString(string)")
-    protected DynamicObject coerceRubyString(DynamicObject string) {
+    @Specialization
+    protected RubyString coerceRubyString(RubyString string) {
         return string;
     }
 
     @Specialization(guards = "!isRubyString(object)")
-    protected DynamicObject coerceObject(VirtualFrame frame, Object object,
+    protected RubyString coerceObject(Object object,
             @Cached BranchProfile errorProfile,
-            @Cached("createPrivate()") CallDispatchHeadNode toStrNode) {
+            @Cached DispatchNode toStrNode) {
         final Object coerced;
         try {
             coerced = toStrNode.call(object, "to_str");
         } catch (RaiseException e) {
             errorProfile.enter();
-            if (Layouts.BASIC_OBJECT.getLogicalClass(e.getException()) == coreLibrary().noMethodErrorClass) {
+            if (e.getException().getLogicalClass() == coreLibrary().noMethodErrorClass) {
                 throw new RaiseException(
                         getContext(),
                         coreExceptions().typeErrorNoImplicitConversion(object, "String", this));
@@ -57,7 +55,7 @@ public abstract class ToStrNode extends RubyContextSourceNode {
         }
 
         if (RubyGuards.isRubyString(coerced)) {
-            return (DynamicObject) coerced;
+            return (RubyString) coerced;
         } else {
             errorProfile.enter();
             throw new RaiseException(

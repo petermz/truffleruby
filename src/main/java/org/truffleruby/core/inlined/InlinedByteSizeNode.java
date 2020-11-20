@@ -9,32 +9,30 @@
  */
 package org.truffleruby.core.inlined;
 
-import org.truffleruby.RubyContext;
-import org.truffleruby.core.string.StringNodes;
+import org.truffleruby.RubyLanguage;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.language.dispatch.RubyCallNodeParameters;
-import org.truffleruby.language.methods.LookupMethodNode;
 
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.frame.VirtualFrame;
-import com.oracle.truffle.api.object.DynamicObject;
+import org.truffleruby.language.methods.LookupMethodOnSelfNode;
 
 public abstract class InlinedByteSizeNode extends UnaryInlinedOperationNode {
 
     protected static final String METHOD = "bytesize";
 
-    public InlinedByteSizeNode(RubyContext context, RubyCallNodeParameters callNodeParameters) {
-        super(context, callNodeParameters);
+    public InlinedByteSizeNode(RubyLanguage language, RubyCallNodeParameters callNodeParameters) {
+        super(language, callNodeParameters);
     }
 
     @Specialization(
-            guards = { "lookupNode.lookup(frame, self, METHOD) == coreMethods().STRING_BYTESIZE", },
+            guards = { "lookupNode.lookupProtected(frame, self, METHOD) == coreMethods().STRING_BYTESIZE", },
             assumptions = "assumptions",
             limit = "1")
-    protected int byteSize(VirtualFrame frame, DynamicObject self,
-            @Cached LookupMethodNode lookupNode,
-            @Cached StringNodes.ByteSizeNode byteSizeNode) {
-        return byteSizeNode.executeByteSize(self);
+    protected int byteSize(VirtualFrame frame, RubyString self,
+            @Cached LookupMethodOnSelfNode lookupNode) {
+        return self.rope.byteLength();
     }
 
     @Specialization

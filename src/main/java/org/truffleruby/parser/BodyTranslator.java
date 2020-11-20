@@ -19,13 +19,13 @@ import java.util.Deque;
 import java.util.Iterator;
 import java.util.List;
 
-import com.oracle.truffle.api.CompilerDirectives;
 import org.jcodings.Encoding;
 import org.joni.NameEntry;
 import org.joni.Regex;
 import org.joni.Syntax;
 import org.truffleruby.RubyContext;
 import org.truffleruby.RubyLanguage;
+import org.truffleruby.SuppressFBWarnings;
 import org.truffleruby.builtins.PrimitiveNodeConstructor;
 import org.truffleruby.core.CoreLibrary;
 import org.truffleruby.core.IsNilNode;
@@ -51,16 +51,19 @@ import org.truffleruby.core.module.ModuleNodesFactory;
 import org.truffleruby.core.numeric.BignumOperations;
 import org.truffleruby.core.proc.ProcType;
 import org.truffleruby.core.range.RangeNodesFactory;
+import org.truffleruby.core.regexp.EncodingCache;
 import org.truffleruby.core.regexp.InterpolatedRegexpNode;
 import org.truffleruby.core.regexp.MatchDataNodes.GetIndexNode;
 import org.truffleruby.core.regexp.RegexWarnCallback;
 import org.truffleruby.core.regexp.RegexpNodes;
 import org.truffleruby.core.regexp.RegexpOptions;
+import org.truffleruby.core.regexp.RubyRegexp;
 import org.truffleruby.core.regexp.TruffleRegexpNodes;
 import org.truffleruby.core.rope.CodeRange;
 import org.truffleruby.core.rope.Rope;
 import org.truffleruby.core.rope.RopeConstants;
 import org.truffleruby.core.string.InterpolatedStringNode;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.core.support.TypeNodes;
 import org.truffleruby.language.LexicalScope;
 import org.truffleruby.language.Nil;
@@ -108,17 +111,23 @@ import org.truffleruby.language.globals.ReadGlobalVariableNodeGen;
 import org.truffleruby.language.globals.ReadMatchReferenceNodes;
 import org.truffleruby.language.globals.WriteGlobalVariableNodeGen;
 import org.truffleruby.language.literal.BooleanLiteralNode;
+import org.truffleruby.language.literal.EncodingLiteralNode;
 import org.truffleruby.language.literal.FloatLiteralNode;
 import org.truffleruby.language.literal.IntegerFixnumLiteralNode;
 import org.truffleruby.language.literal.LongFixnumLiteralNode;
 import org.truffleruby.language.literal.NilLiteralNode;
+import org.truffleruby.language.literal.ObjectClassLiteralNode;
 import org.truffleruby.language.literal.ObjectLiteralNode;
+import org.truffleruby.language.literal.RangeClassLiteralNode;
 import org.truffleruby.language.literal.StringLiteralNode;
+import org.truffleruby.language.literal.TruffleInternalModuleLiteralNode;
+import org.truffleruby.language.literal.TruffleKernelOperationsModuleLiteralNode;
 import org.truffleruby.language.locals.DeclarationFlipFlopStateNode;
 import org.truffleruby.language.locals.FlipFlopNode;
 import org.truffleruby.language.locals.FlipFlopStateNode;
 import org.truffleruby.language.locals.InitFlipFlopSlotNode;
 import org.truffleruby.language.locals.LocalFlipFlopStateNode;
+import org.truffleruby.language.locals.ReadLocalNode;
 import org.truffleruby.language.methods.Arity;
 import org.truffleruby.language.methods.BlockDefinitionNode;
 import org.truffleruby.language.methods.CatchBreakNode;
@@ -127,6 +136,7 @@ import org.truffleruby.language.methods.GetDefaultDefineeNode;
 import org.truffleruby.language.methods.LiteralMethodDefinitionNode;
 import org.truffleruby.language.methods.ModuleBodyDefinitionNode;
 import org.truffleruby.language.methods.SharedMethodInfo;
+import org.truffleruby.language.methods.Split;
 import org.truffleruby.language.methods.UnsupportedOperationBehavior;
 import org.truffleruby.language.objects.DefineClassNode;
 import org.truffleruby.language.objects.DefineModuleNode;
@@ -256,12 +266,11 @@ import org.truffleruby.parser.parser.ParseNodeTuple;
 import org.truffleruby.parser.parser.ParserSupport;
 import org.truffleruby.parser.scope.StaticScope;
 
-import com.oracle.truffle.api.RootCallTarget;
+import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.Truffle;
 import com.oracle.truffle.api.frame.FrameSlot;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.NodeUtil;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.source.Source;
 import com.oracle.truffle.api.source.SourceSection;
 
@@ -399,7 +408,7 @@ public class BodyTranslator extends Translator {
             translatedValues[n] = values[n].accept(this);
         }
 
-        final RubyNode ret = ArrayLiteralNode.create(translatedValues);
+        final RubyNode ret = ArrayLiteralNode.create(language, translatedValues);
         ret.unsafeSetSourceSection(node.getPosition());
         return addNewlineIfNeeded(node, ret);
     }
@@ -441,7 +450,7 @@ public class BodyTranslator extends Translator {
 
     private RubyNode bignumOrFixnumNode(BigInteger value) {
         if (value.bitLength() >= 64) {
-            return new ObjectLiteralNode(BignumOperations.createBignum(context, value));
+            return new ObjectLiteralNode(BignumOperations.createBignum(value));
         } else {
             return new LongFixnumLiteralNode(value.longValue());
         }
@@ -502,12 +511,12 @@ public class BodyTranslator extends Translator {
             final Rope nodeRope = strNode.getValue();
             final CodeRange codeRange = strNode.getCodeRange();
 
-            final Rope rope = context.getRopeCache().getRope(nodeRope, codeRange);
-            final DynamicObject frozenString = context.getFrozenStringLiteral(rope);
+            final Rope rope = language.ropeCache.getRope(nodeRope, codeRange);
+            final RubyString frozenString = context.getFrozenStringLiteral(rope);
 
             return addNewlineIfNeeded(node, withSourceSection(
                     sourceSection,
-                    new DefinedWrapperNode(context.getCoreStrings().METHOD, new ObjectLiteralNode(frozenString))));
+                    new DefinedWrapperNode(language.coreStrings.METHOD, new ObjectLiteralNode(frozenString))));
         }
 
         if (receiver instanceof ConstParseNode &&
@@ -542,7 +551,7 @@ public class BodyTranslator extends Translator {
 
         final String primitiveName = node.getName();
 
-        final PrimitiveNodeConstructor primitive = context.getPrimitiveManager().getPrimitive(primitiveName);
+        final PrimitiveNodeConstructor primitive = language.primitiveManager.getPrimitive(primitiveName);
 
         final ArrayParseNode args = (ArrayParseNode) node.getArgsNode();
         final int size = args != null ? args.size() : 0;
@@ -599,7 +608,7 @@ public class BodyTranslator extends Translator {
                 isAttrAssign);
         RubyNode translated = Translator.withSourceSection(
                 enclosingSourceSection,
-                context.getCoreMethods().createCallNode(callParameters, environment));
+                language.coreMethodAssumptions.createCallNode(callParameters, environment));
 
         translated = wrapCallWithLiteralBlock(argumentsAndBlock, translated);
 
@@ -769,7 +778,7 @@ public class BodyTranslator extends Translator {
                     method = "===";
                     arguments = new RubyNode[]{ NodeUtil.cloneNode(readTemp) };
                 } else {
-                    receiver = new ObjectLiteralNode(context.getCoreLibrary().truffleInternalModule);
+                    receiver = new TruffleInternalModuleLiteralNode();
                     receiver.unsafeSetSourceSection(sourceSection);
                     method = "when_splat";
                     arguments = new RubyNode[]{ rubyExpression, NodeUtil.cloneNode(readTemp) };
@@ -781,8 +790,8 @@ public class BodyTranslator extends Translator {
                         arguments,
                         false,
                         true);
-                final RubyNode conditionNode = Translator
-                        .withSourceSection(sourceSection, new RubyCallNode(callParameters));
+                final RubyNode conditionNode = language.coreMethodAssumptions
+                        .createCallNode(callParameters, environment);
 
                 // Create the if node
                 final RubyNode thenNode = translateNodeOrNil(sourceSection, when.getBodyNode());
@@ -819,26 +828,26 @@ public class BodyTranslator extends Translator {
         return addNewlineIfNeeded(node, ret);
     }
 
-    private RubyNode openModule(SourceIndexLength sourceSection, RubyNode defineOrGetNode, String name,
-            ParseNode bodyNode, boolean sclass) {
+    private RubyNode openModule(SourceIndexLength sourceSection, RubyNode defineOrGetNode, String moduleName,
+            ParseNode bodyNode, OpenModule type) {
         final SourceSection fullSourceSection = sourceSection.toSourceSection(source);
+        final String methodName = type.format(moduleName);
 
-        LexicalScope newLexicalScope = environment.pushLexicalScope();
+        final LexicalScope newLexicalScope = environment.pushLexicalScope();
         try {
             final SharedMethodInfo sharedMethodInfo = new SharedMethodInfo(
                     fullSourceSection,
                     newLexicalScope,
                     Arity.NO_ARGUMENTS,
                     null,
-                    name,
+                    methodName,
                     0,
-                    sclass ? "class body" : "module body",
                     null,
-                    false);
+                    null);
 
             final ReturnID returnId;
 
-            if (sclass) {
+            if (type == OpenModule.SINGLETON_CLASS) {
                 returnId = environment.getReturnID();
             } else {
                 returnId = environment.getParseEnvironment().allocateReturnID();
@@ -852,7 +861,7 @@ public class BodyTranslator extends Translator {
                     true,
                     true,
                     sharedMethodInfo,
-                    name,
+                    methodName,
                     0,
                     null,
                     TranslatorEnvironment.newFrameDescriptor());
@@ -866,7 +875,7 @@ public class BodyTranslator extends Translator {
                     currentNode);
 
             final ModuleBodyDefinitionNode definition = moduleTranslator
-                    .compileClassNode(sourceSection, name, bodyNode, sclass);
+                    .compileClassNode(sourceSection, bodyNode, type);
 
             return Translator.withSourceSection(
                     sourceSection,
@@ -883,8 +892,8 @@ public class BodyTranslator extends Translator {
      * a special method. We run that method with self set to be the newly allocated module or class.
      * </p>
     */
-    private ModuleBodyDefinitionNode compileClassNode(SourceIndexLength sourceSection, String name, ParseNode bodyNode,
-            boolean sclass) {
+    private ModuleBodyDefinitionNode compileClassNode(SourceIndexLength sourceSection, ParseNode bodyNode,
+            OpenModule type) {
         RubyNode body = translateNodeOrNil(sourceSection, bodyNode);
 
         body = new InsideModuleDefinitionNode(body);
@@ -894,7 +903,7 @@ public class BodyTranslator extends Translator {
             body = sequence(sourceSection, Arrays.asList(initFlipFlopStates(sourceSection), body));
         }
 
-        final RubyNode writeSelfNode = loadSelf(context, environment);
+        final RubyNode writeSelfNode = loadSelf(language, environment);
         body = sequence(sourceSection, Arrays.asList(writeSelfNode, body));
 
         final SourceSection fullSourceSection = sourceSection.toSourceSection(source);
@@ -905,13 +914,13 @@ public class BodyTranslator extends Translator {
                 environment.getFrameDescriptor(),
                 environment.getSharedMethodInfo(),
                 body,
-                true);
+                Split.NEVER);
 
         final ModuleBodyDefinitionNode definitionNode = new ModuleBodyDefinitionNode(
                 environment.getSharedMethodInfo().getName(),
                 environment.getSharedMethodInfo(),
                 Truffle.getRuntime().createCallTarget(rootNode),
-                sclass,
+                type == OpenModule.SINGLETON_CLASS,
                 environment.isDynamicConstantLookup());
 
         return definitionNode;
@@ -928,7 +937,7 @@ public class BodyTranslator extends Translator {
         final RubyNode superClass = node.getSuperNode() != null ? node.getSuperNode().accept(this) : null;
         final DefineClassNode defineOrGetClass = new DefineClassNode(name, lexicalParent, superClass);
 
-        final RubyNode ret = openModule(sourceSection, defineOrGetClass, name, node.getBodyNode(), false);
+        final RubyNode ret = openModule(sourceSection, defineOrGetClass, name, node.getBodyNode(), OpenModule.CLASS);
         return addNewlineIfNeeded(node, ret);
     }
 
@@ -979,7 +988,7 @@ public class BodyTranslator extends Translator {
         final SourceIndexLength sourceSection = node.getPosition();
         final String name = node.getName();
 
-        final ObjectLiteralNode root = new ObjectLiteralNode(context.getCoreLibrary().objectClass);
+        final ObjectClassLiteralNode root = new ObjectClassLiteralNode();
         root.unsafeSetSourceSection(sourceSection);
 
         final RubyNode ret = new ReadConstantNode(root, name);
@@ -996,7 +1005,7 @@ public class BodyTranslator extends Translator {
         } else if (node instanceof Colon2ConstParseNode) { // A::B
             ret = ((Colon2ConstParseNode) node).getLeftNode().accept(this);
         } else { // Colon3ParseNode: on top-level (Object)
-            ret = new ObjectLiteralNode(context.getCoreLibrary().objectClass);
+            ret = new ObjectClassLiteralNode();
             ret.unsafeSetSourceSection(sourceSection);
         }
 
@@ -1030,7 +1039,7 @@ public class BodyTranslator extends Translator {
             constNode = ((Colon2ParseNode) constNode).getLeftNode(); // Misleading doc, we only want the defined part.
             moduleNode = constNode.accept(this);
         } else if (constNode instanceof Colon3ParseNode) {
-            moduleNode = new ObjectLiteralNode(context.getCoreLibrary().objectClass);
+            moduleNode = new ObjectClassLiteralNode();
         } else {
             throw CompilerDirectives.shouldNotReachHere();
         }
@@ -1043,7 +1052,7 @@ public class BodyTranslator extends Translator {
 
     private RubyNode getLexicalScopeModuleNode(String kind, SourceIndexLength sourceSection) {
         if (environment.isDynamicConstantLookup()) {
-            if (context.getOptions().LOG_DYNAMIC_CONSTANT_LOOKUP) {
+            if (language.options.LOG_DYNAMIC_CONSTANT_LOOKUP) {
                 RubyLanguage.LOGGER
                         .info(() -> kind + " at " + RubyContext.fileLine(sourceSection.toSourceSection(source)));
             }
@@ -1055,7 +1064,7 @@ public class BodyTranslator extends Translator {
 
     private RubyNode getLexicalScopeNode(String kind, SourceIndexLength sourceSection) {
         if (environment.isDynamicConstantLookup()) {
-            if (context.getOptions().LOG_DYNAMIC_CONSTANT_LOOKUP) {
+            if (language.options.LOG_DYNAMIC_CONSTANT_LOOKUP) {
                 RubyLanguage.LOGGER
                         .info(() -> kind + " at " + RubyContext.fileLine(sourceSection.toSourceSection(source)));
             }
@@ -1078,7 +1087,7 @@ public class BodyTranslator extends Translator {
 
         final RubyNode ret;
         if (environment.isDynamicConstantLookup()) {
-            if (context.getOptions().LOG_DYNAMIC_CONSTANT_LOOKUP) {
+            if (language.options.LOG_DYNAMIC_CONSTANT_LOOKUP) {
                 RubyLanguage.LOGGER.info(
                         () -> "dynamic constant lookup at " +
                                 RubyContext.fileLine(sourceSection.toSourceSection(source)));
@@ -1255,8 +1264,7 @@ public class BodyTranslator extends Translator {
                 methodName,
                 0,
                 null,
-                argumentDescriptors,
-                false);
+                argumentDescriptors);
 
         final TranslatorEnvironment newEnvironment = new TranslatorEnvironment(
                 environment,
@@ -1282,11 +1290,13 @@ public class BodyTranslator extends Translator {
                 parserContext,
                 currentNode,
                 argsNode);
-        final RootCallTarget callTarget = methodCompiler.compileMethodNode(sourceSection, defNode, bodyNode);
 
-        return withSourceSection(
-                sourceSection,
-                new LiteralMethodDefinitionNode(moduleNode, methodName, sharedMethodInfo, callTarget, isDefs));
+        return withSourceSection(sourceSection, new LiteralMethodDefinitionNode(
+                moduleNode,
+                methodName,
+                sharedMethodInfo,
+                isDefs,
+                methodCompiler.buildMethodNodeCompiler(sourceSection, defNode, bodyNode)));
     }
 
     @Override
@@ -1294,7 +1304,7 @@ public class BodyTranslator extends Translator {
         final SourceIndexLength sourceSection = node.getPosition();
         final RubyNode begin = node.getBeginNode().accept(this);
         final RubyNode end = node.getEndNode().accept(this);
-        final RubyNode rangeClass = new ObjectLiteralNode(context.getCoreLibrary().rangeClass);
+        final RubyNode rangeClass = new RangeClassLiteralNode();
         final RubyNode isExclusive = new ObjectLiteralNode(node.isExclusive());
 
         final RubyNode ret = RangeNodesFactory.NewNodeFactory.create(rangeClass, begin, end, isExclusive);
@@ -1305,7 +1315,7 @@ public class BodyTranslator extends Translator {
     @Override
     public RubyNode visitEncodingNode(EncodingParseNode node) {
         SourceIndexLength sourceSection = node.getPosition();
-        final RubyNode ret = new ObjectLiteralNode(context.getEncodingManager().getRubyEncoding(node.getEncoding()));
+        final RubyNode ret = new EncodingLiteralNode(node.getEncoding().getIndex());
         ret.unsafeSetSourceSection(sourceSection);
         return addNewlineIfNeeded(node, ret);
     }
@@ -1536,6 +1546,7 @@ public class BodyTranslator extends Translator {
         }
     }
 
+    @SuppressFBWarnings("SIC")
     private RubyNode translateDummyAssignment(ParseNode dummyAssignment, final RubyNode rhs) {
         // The JRuby AST includes assignment nodes without a proper value,
         // so we need to patch them to include the proper rhs value to translate them correctly.
@@ -1620,7 +1631,7 @@ public class BodyTranslator extends Translator {
             if (pair.getKey() == null) {
                 // This null case is for splats {a: 1, **{b: 2}, c: 3}
                 final RubyNode hashLiteralSoFar = HashLiteralNode
-                        .create(context, keyValues.toArray(RubyNode.EMPTY_ARRAY));
+                        .create(language, keyValues.toArray(RubyNode.EMPTY_ARRAY));
                 hashConcats.add(hashLiteralSoFar);
                 hashConcats.add(new EnsureSymbolKeysNode(
                         HashCastNodeGen.create(pair.getValue().accept(this))));
@@ -1636,7 +1647,7 @@ public class BodyTranslator extends Translator {
             }
         }
 
-        final RubyNode hashLiteralSoFar = HashLiteralNode.create(context, keyValues.toArray(RubyNode.EMPTY_ARRAY));
+        final RubyNode hashLiteralSoFar = HashLiteralNode.create(language, keyValues.toArray(RubyNode.EMPTY_ARRAY));
         hashConcats.add(hashLiteralSoFar);
 
         if (hashConcats.size() == 1) {
@@ -1748,8 +1759,7 @@ public class BodyTranslator extends Translator {
                 SharedMethodInfo.getBlockName(blockDepth, methodName),
                 blockDepth,
                 methodName,
-                Helpers.argsNodeToArgumentDescriptors(argsNode),
-                false);
+                Helpers.argsNodeToArgumentDescriptors(argsNode));
 
         final ParseEnvironment parseEnvironment = environment.getParseEnvironment();
         final ReturnID returnID = isLambda ? parseEnvironment.allocateReturnID() : environment.getReturnID();
@@ -1960,7 +1970,7 @@ public class BodyTranslator extends Translator {
 
         final DefineModuleNode defineModuleNode = DefineModuleNodeGen.create(name, lexicalParent);
 
-        final RubyNode ret = openModule(sourceSection, defineModuleNode, name, node.getBodyNode(), false);
+        final RubyNode ret = openModule(sourceSection, defineModuleNode, name, node.getBodyNode(), OpenModule.MODULE);
         return addNewlineIfNeeded(node, ret);
     }
 
@@ -2027,7 +2037,7 @@ public class BodyTranslator extends Translator {
 
             final RubyNode blockNode = sequence(sourceSection, Arrays.asList(sequence));
 
-            final ArrayLiteralNode arrayNode = ArrayLiteralNode.create(tempValues);
+            final ArrayLiteralNode arrayNode = ArrayLiteralNode.create(language, tempValues);
             arrayNode.unsafeSetSourceSection(sourceSection);
             result = new ElidableResultNode(blockNode, arrayNode);
         } else if (preArray != null) {
@@ -2068,6 +2078,7 @@ public class BodyTranslator extends Translator {
             /* Create a sequence of instructions, with the first being the literal array assigned to the temp. */
 
             final RubyNode splatCastNode = SplatCastNodeGen.create(
+                    language,
                     translatingNextExpression
                             ? SplatCastNode.NilBehavior.EMPTY_ARRAY
                             : SplatCastNode.NilBehavior.ARRAY_WITH_NIL,
@@ -2139,7 +2150,7 @@ public class BodyTranslator extends Translator {
                     environment.findLocalVarNode(tempRHSName, sourceSection));
         } else if (node.getPre() == null && node.getPost() == null && node.getRest() instanceof StarParseNode) {
             result = rhsTranslated;
-        } else if (node.getPre() == null && node.getPost() == null && node.getRest() != null && rhs != null &&
+        } else if (node.getPre() == null && node.getPost() == null && node.getRest() != null &&
                 !(rhs instanceof ArrayParseNode)) {
             /* *a = b
              *
@@ -2170,6 +2181,7 @@ public class BodyTranslator extends Translator {
             sequence.add(writeTempRHS);
 
             final SplatCastNode rhsSplatCast = SplatCastNodeGen.create(
+                    language,
                     nilBehavior,
                     true,
                     environment.findLocalVarNode(tempRHSName, sourceSection));
@@ -2196,7 +2208,7 @@ public class BodyTranslator extends Translator {
             }
 
             result = new ElidableResultNode(sequence(sourceSection, sequence), assignmentResult);
-        } else if (node.getPre() == null && node.getPost() == null && node.getRest() != null && rhs != null &&
+        } else if (node.getPre() == null && node.getPost() == null && node.getRest() != null &&
                 rhs instanceof ArrayParseNode) {
             /* *a = [b, c]
              *
@@ -2227,6 +2239,7 @@ public class BodyTranslator extends Translator {
 
 
             final RubyNode splatCastNode = SplatCastNodeGen.create(
+                    language,
                     translatingNextExpression
                             ? SplatCastNode.NilBehavior.EMPTY_ARRAY
                             : SplatCastNode.NilBehavior.ARRAY_WITH_NIL,
@@ -2287,7 +2300,7 @@ public class BodyTranslator extends Translator {
             throw CompilerDirectives.shouldNotReachHere();
         }
 
-        final RubyNode ret = new DefinedWrapperNode(context.getCoreStrings().ASSIGNMENT, result);
+        final RubyNode ret = new DefinedWrapperNode(language.coreStrings.ASSIGNMENT, result);
         ret.unsafeSetSourceSection(sourceSection);
         return addNewlineIfNeeded(node, ret);
     }
@@ -2297,6 +2310,7 @@ public class BodyTranslator extends Translator {
         final SourceIndexLength sourceSection = node.getPosition();
 
         if (!environment.isBlock() && !translatingWhile) {
+            final RubyContext context = RubyLanguage.getCurrentContext();
             throw new RaiseException(
                     context,
                     context.getCoreExceptions().syntaxError(
@@ -2359,7 +2373,7 @@ public class BodyTranslator extends Translator {
         final RubyNode andNode = new AndNode(lhs, rhs);
         andNode.unsafeSetSourceSection(sourceSection);
 
-        final RubyNode ret = new DefinedWrapperNode(context.getCoreStrings().ASSIGNMENT, andNode);
+        final RubyNode ret = new DefinedWrapperNode(language.coreStrings.ASSIGNMENT, andNode);
         ret.unsafeSetSourceSection(sourceSection);
         return addNewlineIfNeeded(node, ret);
     }
@@ -2393,7 +2407,7 @@ public class BodyTranslator extends Translator {
                         new RubyNode[]{ rhs },
                         false,
                         true);
-                final RubyNode opNode = context.getCoreMethods().createCallNode(callParameters, environment);
+                final RubyNode opNode = language.coreMethodAssumptions.createCallNode(callParameters, environment);
                 final RubyNode ret = ((ReadConstantNode) lhs).makeWriteNode(opNode);
                 ret.unsafeSetSourceSection(sourceSection);
                 return addNewlineIfNeeded(node, ret);
@@ -2436,7 +2450,7 @@ public class BodyTranslator extends Translator {
 
             final RubyNode controlNode = isOrOperator ? new OrNode(lhs, rhs) : new AndNode(lhs, rhs);
             final RubyNode ret = new DefinedWrapperNode(
-                    context.getCoreStrings().ASSIGNMENT,
+                    language.coreStrings.ASSIGNMENT,
                     sequence(
                             sourceSection,
                             Arrays.asList(writeReceiverToTemp.accept(this), controlNode)));
@@ -2512,7 +2526,7 @@ public class BodyTranslator extends Translator {
         final SourceIndexLength sourceSection = node.getPosition();
 
         final RubyNode ret = new DefinedWrapperNode(
-                context.getCoreStrings().ASSIGNMENT,
+                language.coreStrings.ASSIGNMENT,
                 new OrLazyValueDefinedNode(lhs, rhs));
         ret.unsafeSetSourceSection(sourceSection);
         return addNewlineIfNeeded(node, ret);
@@ -2658,8 +2672,7 @@ public class BodyTranslator extends Translator {
                                 position,
                                 new TruffleFragmentParseNode(
                                         position,
-                                        new ObjectLiteralNode(
-                                                context.getCoreLibrary().truffleKernelOperationsModule)),
+                                        new TruffleKernelOperationsModuleLiteralNode()),
                                 "at_exit",
                                 new ArrayParseNode(position, new TrueParseNode(position)),
                                 new IterParseNode(position, node.getArgsNode(), scope, node.getBodyNode())),
@@ -2699,7 +2712,7 @@ public class BodyTranslator extends Translator {
     private RubyNode translateRationalComplex(SourceIndexLength sourceSection, String name, RubyNode a, RubyNode b) {
         // Translate as Rational.convert(a, b) # ignoring visibility
 
-        final RubyNode moduleNode = new ObjectLiteralNode(context.getCoreLibrary().objectClass);
+        final RubyNode moduleNode = new ObjectClassLiteralNode();
         ReadConstantNode receiver = new ReadConstantNode(moduleNode, name);
         RubyNode[] arguments = new RubyNode[]{ a, b };
         RubyCallNodeParameters parameters = new RubyCallNodeParameters(
@@ -2715,6 +2728,7 @@ public class BodyTranslator extends Translator {
     @Override
     public RubyNode visitRedoNode(RedoParseNode node) {
         if (!environment.isBlock() && !translatingWhile) {
+            final RubyContext context = RubyLanguage.getCurrentContext();
             throw new RaiseException(
                     context,
                     context.getCoreExceptions().syntaxError(
@@ -2739,8 +2753,13 @@ public class BodyTranslator extends Translator {
         // in the Regex object as the "user object". Since ropes are immutable, we need to take this updated copy when
         // constructing the final regexp.
         final Rope updatedRope = (Rope) regex.getUserObject();
-        final DynamicObject regexp = RegexpNodes
-                .createRubyRegexp(context.getCoreLibrary().regexpFactory, regex, updatedRope, options);
+        final RubyRegexp regexp = RegexpNodes.createRubyRegexp(
+                context.getCoreLibrary().regexpClass,
+                RubyLanguage.regexpShape,
+                regex,
+                updatedRope,
+                options,
+                new EncodingCache());
 
         final ObjectLiteralNode literalNode = new ObjectLiteralNode(regexp);
         literalNode.unsafeSetSourceSection(node.getPosition());
@@ -2756,7 +2775,7 @@ public class BodyTranslator extends Translator {
 
         boolean canOmitBacktrace = false;
 
-        if (context.getOptions().BACKTRACES_OMIT_UNUSED && rescueBody != null &&
+        if (language.options.BACKTRACES_OMIT_UNUSED && rescueBody != null &&
                 rescueBody.getBodyNode() instanceof SideEffectFree && rescueBody.getOptRescueNode() == null) {
             canOmitBacktrace = true;
         }
@@ -2833,7 +2852,7 @@ public class BodyTranslator extends Translator {
     private RescueNode translateRescueSplatParseNode(SplatParseNode splat, RescueBodyParseNode rescueBody) {
         final RubyNode splatTranslated = translateNodeOrNil(rescueBody.getPosition(), splat.getValue());
         final RubyNode translatedBody = translateNodeOrNil(rescueBody.getPosition(), rescueBody.getBodyNode());
-        return withSourceSection(splat.getPosition(), new RescueSplatNode(context, splatTranslated, translatedBody));
+        return withSourceSection(splat.getPosition(), new RescueSplatNode(language, splatTranslated, translatedBody));
     }
 
     @Override
@@ -2877,7 +2896,7 @@ public class BodyTranslator extends Translator {
             } else {
                 // Switch to dynamic constant lookup
                 environment.getParseEnvironment().setDynamicConstantLookup(true);
-                if (context.getOptions().LOG_DYNAMIC_CONSTANT_LOOKUP) {
+                if (language.options.LOG_DYNAMIC_CONSTANT_LOOKUP) {
                     RubyLanguage.LOGGER.info(
                             () -> "start dynamic constant lookup at " +
                                     RubyContext.fileLine(sourceSection.toSourceSection(source)));
@@ -2887,7 +2906,7 @@ public class BodyTranslator extends Translator {
 
         final RubyNode ret;
         try {
-            ret = openModule(sourceSection, singletonClassNode, "(singleton-def)", node.getBodyNode(), true);
+            ret = openModule(sourceSection, singletonClassNode, "", node.getBodyNode(), OpenModule.SINGLETON_CLASS);
         } finally {
             environment.getParseEnvironment().setDynamicConstantLookup(dynamicConstantLookup);
         }
@@ -2911,24 +2930,24 @@ public class BodyTranslator extends Translator {
         final SourceIndexLength sourceSection = node.getPosition();
 
         final RubyNode value = translateNodeOrNil(sourceSection, node.getValue());
-        final RubyNode ret = SplatCastNodeGen.create(SplatCastNode.NilBehavior.CONVERT, false, value);
+        final RubyNode ret = SplatCastNodeGen.create(language, SplatCastNode.NilBehavior.CONVERT, false, value);
         ret.unsafeSetSourceSection(sourceSection);
         return addNewlineIfNeeded(node, ret);
     }
 
     @Override
     public RubyNode visitStrNode(StrParseNode node) {
-        final Rope rope = context.getRopeCache().getRope(node.getValue(), node.getCodeRange());
+        final Rope rope = language.ropeCache.getRope(node.getValue(), node.getCodeRange());
         final RubyNode ret;
 
         if (node.isFrozen()) {
-            final DynamicObject frozenString = context.getFrozenStringLiteral(rope);
+            final RubyString frozenString = context.getFrozenStringLiteral(rope);
 
             ret = new DefinedWrapperNode(
-                    context.getCoreStrings().EXPRESSION,
+                    language.coreStrings.EXPRESSION,
                     new ObjectLiteralNode(frozenString));
         } else {
-            ret = new StringLiteralNode(rope);
+            ret = new StringLiteralNode(language, rope);
         }
         ret.unsafeSetSourceSection(node.getPosition());
         return addNewlineIfNeeded(node, ret);
@@ -3079,7 +3098,7 @@ public class BodyTranslator extends Translator {
 
     @Override
     public RubyNode visitZArrayNode(ZArrayParseNode node) {
-        final RubyNode ret = ArrayLiteralNode.create(RubyNode.EMPTY_ARRAY);
+        final RubyNode ret = ArrayLiteralNode.create(language, RubyNode.EMPTY_ARRAY);
         ret.unsafeSetSourceSection(node.getPosition());
         return addNewlineIfNeeded(node, ret);
     }
@@ -3142,11 +3161,10 @@ public class BodyTranslator extends Translator {
                 return node;
             }
 
-            if (context.getCoverageManager().isEnabled()) {
+            if (language.singleContextAssumption.isValid() && context.getCoverageManager().isEnabled()) {
                 node.unsafeSetIsCoverageLine();
                 context.getCoverageManager().setLineHasCode(source, current.toSourceSection(source).getStartLine());
             }
-
             node.unsafeSetIsNewLine();
         }
 

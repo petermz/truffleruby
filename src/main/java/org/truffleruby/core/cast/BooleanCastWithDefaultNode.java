@@ -10,13 +10,14 @@
 package org.truffleruby.core.cast;
 
 import org.truffleruby.core.symbol.RubySymbol;
+import org.truffleruby.language.Nil;
 import org.truffleruby.language.RubyContextSourceNode;
 import org.truffleruby.language.NotProvided;
+import org.truffleruby.language.RubyDynamicObject;
 import org.truffleruby.language.RubyNode;
 
 import com.oracle.truffle.api.dsl.NodeChild;
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.object.DynamicObject;
 
 /** Casts a value into a boolean and defaults to the given value if not provided. */
 @NodeChild(value = "value", type = RubyNode.class)
@@ -38,8 +39,8 @@ public abstract class BooleanCastWithDefaultNode extends RubyContextSourceNode {
         return value;
     }
 
-    @Specialization(guards = "isNil(nil)")
-    protected boolean doNil(Object nil) {
+    @Specialization
+    protected boolean doNil(Nil nil) {
         return false;
     }
 
@@ -64,7 +65,7 @@ public abstract class BooleanCastWithDefaultNode extends RubyContextSourceNode {
     }
 
     @Specialization
-    protected boolean doBasicObject(DynamicObject object) {
+    protected boolean doBasicObject(RubyDynamicObject object) {
         return true;
     }
 

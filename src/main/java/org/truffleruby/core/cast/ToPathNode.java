@@ -9,27 +9,27 @@
  */
 package org.truffleruby.core.cast;
 
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.language.RubyContextSourceNode;
 import org.truffleruby.language.RubyNode;
-import org.truffleruby.language.dispatch.CallDispatchHeadNode;
+import org.truffleruby.language.dispatch.DispatchNode;
 
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.NodeChild;
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.object.DynamicObject;
 
 @NodeChild(value = "child", type = RubyNode.class)
 public abstract class ToPathNode extends RubyContextSourceNode {
 
-    @Specialization(guards = "isRubyString(path)")
-    protected DynamicObject coerceRubyString(DynamicObject path) {
+    @Specialization
+    protected RubyString coerceRubyString(RubyString path) {
         return path;
     }
 
     @Specialization(guards = "!isRubyString(object)")
-    protected DynamicObject coerceObject(Object object,
-            @Cached("createPrivate()") CallDispatchHeadNode toPathNode) {
-        return (DynamicObject) toPathNode.call(coreLibrary().truffleTypeModule, "coerce_to_path", object);
+    protected RubyString coerceObject(Object object,
+            @Cached DispatchNode toPathNode) {
+        return (RubyString) toPathNode.call(coreLibrary().truffleTypeModule, "coerce_to_path", object);
     }
 
 }

@@ -11,8 +11,6 @@ package org.truffleruby.core.array;
 
 import java.lang.reflect.Array;
 
-import org.truffleruby.Layouts;
-import org.truffleruby.RubyContext;
 import org.truffleruby.core.array.library.ArrayStoreLibrary;
 import org.truffleruby.core.array.library.DelegatedArrayStorage;
 import org.truffleruby.core.array.library.NativeArrayStorage;
@@ -20,34 +18,30 @@ import org.truffleruby.language.objects.shared.SharedObjects;
 
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
-import com.oracle.truffle.api.object.DynamicObject;
-import com.oracle.truffle.api.profiles.ConditionProfile;
 
 public abstract class ArrayOperations {
 
-    public static boolean isPrimitiveStorage(DynamicObject array) {
+    public static boolean isPrimitiveStorage(RubyArray array) {
         Object store = getBackingStore(array);
         return store == ArrayStoreLibrary.INITIAL_STORE || store instanceof int[] || store instanceof long[] ||
                 store instanceof double[];
     }
 
-    public static boolean verifyStore(DynamicObject array) {
+    public static boolean verifyStore(RubyArray array) {
         final Object backingStore = getBackingStore(array);
         assert backingStore == ArrayStoreLibrary.INITIAL_STORE ||
                 backingStore instanceof NativeArrayStorage ||
                 backingStore instanceof int[] || backingStore instanceof long[] || backingStore instanceof double[] ||
                 backingStore.getClass() == Object[].class : backingStore;
 
-        final RubyContext context = Layouts.MODULE.getFields(Layouts.ARRAY.getLogicalClass(array)).getContext();
-        if (SharedObjects.isShared(context, array)) {
-            final Object store = Layouts.ARRAY.getStore(array);
+        if (SharedObjects.isShared(array)) {
+            final Object store = array.store;
 
             if (store.getClass() == Object[].class) {
                 final Object[] objectArray = (Object[]) store;
 
                 for (Object element : objectArray) {
                     assert SharedObjects.assertPropagateSharing(
-                            context,
                             array,
                             element) : "unshared element in shared Array: " + element;
                 }
@@ -59,7 +53,6 @@ public abstract class ArrayOperations {
                 for (int i = delegated.offset; i < delegated.offset + delegated.length; i++) {
                     final Object element = objectArray[i];
                     assert SharedObjects.assertPropagateSharing(
-                            context,
                             array,
                             element) : "unshared element in shared copy-on-write Array: " + element;
                 }
@@ -69,22 +62,6 @@ public abstract class ArrayOperations {
         }
 
         return true;
-    }
-
-    public static int normalizeIndex(int length, int index, ConditionProfile negativeIndexProfile) {
-        if (negativeIndexProfile.profile(index < 0)) {
-            return length + index;
-        } else {
-            return index;
-        }
-    }
-
-    public static int normalizeIndex(int length, int index) {
-        if (CompilerDirectives.injectBranchProbability(CompilerDirectives.SLOWPATH_PROBABILITY, index < 0)) {
-            return length + index;
-        } else {
-            return index;
-        }
     }
 
     public static int clampExclusiveIndex(int length, int index) {
@@ -99,16 +76,16 @@ public abstract class ArrayOperations {
     }
 
     @TruffleBoundary
-    public static Iterable<Object> toIterable(DynamicObject array) {
+    public static Iterable<Object> toIterable(RubyArray array) {
         return ArrayStoreLibrary
                 .getFactory()
                 .getUncached()
-                .getIterable(Layouts.ARRAY.getStore(array), 0, Layouts.ARRAY.getSize(array));
+                .getIterable((array.store), 0, array.size);
     }
 
     @TruffleBoundary
-    private static Object getBackingStore(DynamicObject array) {
-        final Object store = Layouts.ARRAY.getStore(array);
+    private static Object getBackingStore(RubyArray array) {
+        final Object store = array.store;
         if (store instanceof DelegatedArrayStorage) {
             return ((DelegatedArrayStorage) store).storage;
         } else {
@@ -117,8 +94,8 @@ public abstract class ArrayOperations {
     }
 
     @TruffleBoundary
-    public static int getStoreCapacity(DynamicObject array) {
-        Object store = Layouts.ARRAY.getStore(array);
+    public static int getStoreCapacity(RubyArray array) {
+        Object store = array.store;
         if (store == ArrayStoreLibrary.INITIAL_STORE) {
             return 0;
         } else {

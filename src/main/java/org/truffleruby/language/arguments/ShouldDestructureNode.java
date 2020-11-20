@@ -11,15 +11,15 @@ package org.truffleruby.language.arguments;
 
 import org.truffleruby.language.RubyContextSourceNode;
 import org.truffleruby.language.RubyGuards;
-import org.truffleruby.language.dispatch.DoesRespondDispatchHeadNode;
 
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.profiles.BranchProfile;
+import org.truffleruby.language.dispatch.InternalRespondToNode;
 
 public class ShouldDestructureNode extends RubyContextSourceNode {
 
-    @Child private DoesRespondDispatchHeadNode respondToToAry;
+    @Child private InternalRespondToNode respondToToAry;
 
     private final BranchProfile checkIsArrayProfile = BranchProfile.create();
 
@@ -39,12 +39,12 @@ public class ShouldDestructureNode extends RubyContextSourceNode {
 
         if (respondToToAry == null) {
             CompilerDirectives.transferToInterpreterAndInvalidate();
-            respondToToAry = insert(DoesRespondDispatchHeadNode.create());
+            respondToToAry = insert(InternalRespondToNode.create());
         }
 
         // TODO(cseaton): check this is actually a static "find if there is such method" and not a
         // dynamic call to respond_to?
-        return respondToToAry.doesRespondTo(frame, "to_ary", firstArgument);
+        return respondToToAry.execute(frame, firstArgument, "to_ary");
     }
 
 }

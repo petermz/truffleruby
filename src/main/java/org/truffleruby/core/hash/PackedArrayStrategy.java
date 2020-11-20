@@ -9,32 +9,28 @@
  */
 package org.truffleruby.core.hash;
 
-import java.util.Iterator;
-import java.util.NoSuchElementException;
-
-import org.truffleruby.Layouts;
 import org.truffleruby.RubyContext;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
-import com.oracle.truffle.api.object.DynamicObject;
+import org.truffleruby.RubyLanguage;
 
 public abstract class PackedArrayStrategy {
 
     public static final int ELEMENTS_PER_ENTRY = 3;
 
-    public static Object[] createStore(RubyContext context, int hashed, Object key, Object value) {
-        final Object[] store = createStore(context);
+    public static Object[] createStore(RubyLanguage language, int hashed, Object key, Object value) {
+        final Object[] store = createStore(language);
         setHashedKeyValue(store, 0, hashed, key, value);
         return store;
     }
 
-    public static Object[] createStore(RubyContext context) {
-        return new Object[context.getOptions().HASH_PACKED_ARRAY_MAX * ELEMENTS_PER_ENTRY];
+    public static Object[] createStore(RubyLanguage language) {
+        return new Object[language.options.HASH_PACKED_ARRAY_MAX * ELEMENTS_PER_ENTRY];
     }
 
-    public static Object[] copyStore(RubyContext context, Object[] store) {
-        final Object[] copied = createStore(context);
-        System.arraycopy(store, 0, copied, 0, context.getOptions().HASH_PACKED_ARRAY_MAX * ELEMENTS_PER_ENTRY);
+    public static Object[] copyStore(RubyLanguage language, Object[] store) {
+        final Object[] copied = createStore(language);
+        System.arraycopy(store, 0, copied, 0, language.options.HASH_PACKED_ARRAY_MAX * ELEMENTS_PER_ENTRY);
         return copied;
     }
 
@@ -68,8 +64,9 @@ public abstract class PackedArrayStrategy {
         setValue(store, n, value);
     }
 
-    public static void removeEntry(RubyContext context, Object[] store, int n) {
-        for (int i = 0; i < context.getOptions().HASH_PACKED_ARRAY_MAX * ELEMENTS_PER_ENTRY; i += ELEMENTS_PER_ENTRY) {
+    public static void removeEntry(RubyLanguage language, Object[] store, int n) {
+        for (int i = 0; i < language.options.HASH_PACKED_ARRAY_MAX *
+                ELEMENTS_PER_ENTRY; i += ELEMENTS_PER_ENTRY) {
             assert store[i] == null || store[i] instanceof Integer;
         }
 
@@ -79,15 +76,16 @@ public abstract class PackedArrayStrategy {
                 index + ELEMENTS_PER_ENTRY,
                 store,
                 index,
-                context.getOptions().HASH_PACKED_ARRAY_MAX * ELEMENTS_PER_ENTRY - ELEMENTS_PER_ENTRY - index);
+                language.options.HASH_PACKED_ARRAY_MAX * ELEMENTS_PER_ENTRY - ELEMENTS_PER_ENTRY - index);
 
-        for (int i = 0; i < context.getOptions().HASH_PACKED_ARRAY_MAX * ELEMENTS_PER_ENTRY; i += ELEMENTS_PER_ENTRY) {
+        for (int i = 0; i < language.options.HASH_PACKED_ARRAY_MAX *
+                ELEMENTS_PER_ENTRY; i += ELEMENTS_PER_ENTRY) {
             assert store[i] == null || store[i] instanceof Integer;
         }
     }
 
     @TruffleBoundary
-    public static void promoteToBuckets(RubyContext context, DynamicObject hash, Object[] store, int size) {
+    public static void promoteToBuckets(RubyContext context, RubyHash hash, Object[] store, int size) {
         final Entry[] buckets = new Entry[BucketsStrategy.capacityGreaterThan(size)];
 
         Entry firstInSequence = null;
@@ -123,48 +121,11 @@ public abstract class PackedArrayStrategy {
             }
         }
 
-        Layouts.HASH.setStore(hash, buckets);
-        Layouts.HASH.setSize(hash, size);
-        Layouts.HASH.setFirstInSequence(hash, firstInSequence);
-        Layouts.HASH.setLastInSequence(hash, lastInSequence);
+        hash.store = buckets;
+        hash.size = size;
+        hash.firstInSequence = firstInSequence;
+        hash.lastInSequence = lastInSequence;
 
         assert HashOperations.verifyStore(context, hash);
     }
-
-    @TruffleBoundary
-    public static Iterator<KeyValue> iterateKeyValues(final Object[] store, final int size) {
-        return new Iterator<KeyValue>() {
-
-            private int index = 0;
-
-            @Override
-            public boolean hasNext() {
-                return index < size;
-            }
-
-            @Override
-            public KeyValue next() {
-                if (!hasNext()) {
-                    throw new NoSuchElementException();
-                }
-
-                final int finalIndex = index;
-
-                final KeyValue entryResult = new KeyValue(
-                        PackedArrayStrategy.getKey(store, finalIndex),
-                        PackedArrayStrategy.getValue(store, finalIndex));
-
-                index++;
-
-                return entryResult;
-            }
-
-            @Override
-            public void remove() {
-                throw new UnsupportedOperationException();
-            }
-
-        };
-    }
-
 }

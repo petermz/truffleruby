@@ -49,8 +49,6 @@ public class Options {
     public final boolean FROZEN_STRING_LITERALS;
     /** --rubygems=true */
     public final boolean RUBYGEMS;
-    /** --lazy-default=true */
-    public final boolean DEFAULT_LAZY;
     /** --lazy-rubygems=RUBYGEMS && DEFAULT_LAZY */
     public final boolean LAZY_RUBYGEMS;
     /** --patching=true */
@@ -81,8 +79,6 @@ public class Options {
     public final boolean CORE_AS_INTERNAL;
     /** --stdlib-as-internal=true */
     public final boolean STDLIB_AS_INTERNAL;
-    /** --lazy-translation-user=DEFAULT_LAZY */
-    public final boolean LAZY_TRANSLATION_USER;
     /** --exceptions-store-java=false */
     public final boolean EXCEPTIONS_STORE_JAVA;
     /** --exceptions-print-java=false */
@@ -99,8 +95,6 @@ public class Options {
     public final boolean BACKTRACES_INTERLEAVE_JAVA;
     /** --backtraces-limit=9999 */
     public final int BACKTRACES_LIMIT;
-    /** --backtraces-omit-unused=true */
-    public final boolean BACKTRACES_OMIT_UNUSED;
     /** --backtraces-on-interrupt=false */
     public final boolean BACKTRACE_ON_INTERRUPT;
     /** --backtraces-sigalrm=!EMBEDDED */
@@ -149,22 +143,10 @@ public class Options {
     public final String[] ARGV_GLOBAL_FLAGS;
     /** --building-core-cexts=false */
     public final boolean BUILDING_CORE_CEXTS;
-    /** --lazy-translation-log=false */
-    public final boolean LAZY_TRANSLATION_LOG;
-    /** --constant-dynamic-lookup-log=false */
-    public final boolean LOG_DYNAMIC_CONSTANT_LOOKUP;
     /** --rope-print-intern-stats=false */
     public final boolean ROPE_PRINT_INTERN_STATS;
     /** --preinit=true */
     public final boolean PREINITIALIZATION;
-    /** --lazy-builtins=DEFAULT_LAZY */
-    public final boolean LAZY_BUILTINS;
-    /** --lazy-translation-core=DEFAULT_LAZY */
-    public final boolean LAZY_TRANSLATION_CORE;
-    /** --basic-ops-inline=true */
-    public final boolean BASICOPS_INLINE;
-    /** --profile-arguments=true */
-    public final boolean PROFILE_ARGUMENTS;
     /** --default-cache=8 */
     public final int DEFAULT_CACHE;
     /** --method-lookup-cache=DEFAULT_CACHE */
@@ -229,8 +211,6 @@ public class Options {
     public final int ARRAY_UNINITIALIZED_SIZE;
     /** --array-small=3 */
     public final int ARRAY_SMALL;
-    /** --hash-packed-array-max=3 */
-    public final int HASH_PACKED_ARRAY_MAX;
     /** --pack-unroll=4 */
     public final int PACK_UNROLL_LIMIT;
     /** --pack-recover=32 */
@@ -239,8 +219,6 @@ public class Options {
     public final int CEXTS_MARKING_CACHE;
     /** --cexts-tonative-stats=false */
     public final boolean CEXTS_TONATIVE_STATS;
-    /** --rope-depth-threshold=128 */
-    public final int ROPE_DEPTH_THRESHOLD;
     /** --global-variable-max-invalidations=1 */
     public final int GLOBAL_VARIABLE_MAX_INVALIDATIONS;
     /** --clone-default=true */
@@ -251,6 +229,8 @@ public class Options {
     public final boolean CORE_ALWAYS_CLONE;
     /** --always-split-honor=CLONE_DEFAULT */
     public final boolean ALWAYS_SPLIT_HONOR;
+    /** --never-split-honor=true */
+    public final boolean NEVER_SPLIT_HONOR;
     /** --inline-needs-caller-frame=INLINE_DEFAULT */
     public final boolean INLINE_NEEDS_CALLER_FRAME;
     /** --yield-always-clone=CLONE_DEFAULT */
@@ -261,8 +241,6 @@ public class Options {
     public final boolean METHODMISSING_ALWAYS_CLONE;
     /** --method-missing-always-inline=INLINE_DEFAULT */
     public final boolean METHODMISSING_ALWAYS_INLINE;
-    /** --call-with-block-always-clone=CLONE_DEFAULT */
-    public final boolean CALL_WITH_BLOCK_ALWAYS_CLONE;
     /** --regexp-instrument-creation=false */
     public final boolean REGEXP_INSTRUMENT_CREATION;
     /** --regexp-instrument-match=false */
@@ -280,7 +258,7 @@ public class Options {
     /** --testing-rubygems=false */
     public final boolean TESTING_RUBYGEMS;
 
-    public Options(Env env, OptionValues options) {
+    public Options(Env env, OptionValues options, LanguageOptions languageOptions) {
         LOAD_PATHS = options.get(OptionsCatalog.LOAD_PATHS_KEY);
         REQUIRED_LIBRARIES = options.get(OptionsCatalog.REQUIRED_LIBRARIES_KEY);
         WORKING_DIRECTORY = options.get(OptionsCatalog.WORKING_DIRECTORY_KEY);
@@ -294,8 +272,7 @@ public class Options {
         CORE_LOAD_PATH = options.get(OptionsCatalog.CORE_LOAD_PATH_KEY);
         FROZEN_STRING_LITERALS = options.get(OptionsCatalog.FROZEN_STRING_LITERALS_KEY);
         RUBYGEMS = options.get(OptionsCatalog.RUBYGEMS_KEY);
-        DEFAULT_LAZY = options.get(OptionsCatalog.DEFAULT_LAZY_KEY);
-        LAZY_RUBYGEMS = RUBYGEMS && (options.hasBeenSet(OptionsCatalog.LAZY_RUBYGEMS_KEY) ? options.get(OptionsCatalog.LAZY_RUBYGEMS_KEY) : DEFAULT_LAZY);
+        LAZY_RUBYGEMS = RUBYGEMS && (options.hasBeenSet(OptionsCatalog.LAZY_RUBYGEMS_KEY) ? options.get(OptionsCatalog.LAZY_RUBYGEMS_KEY) : languageOptions.DEFAULT_LAZY);
         PATCHING = options.get(OptionsCatalog.PATCHING_KEY);
         DID_YOU_MEAN = options.get(OptionsCatalog.DID_YOU_MEAN_KEY);
         HASHING_DETERMINISTIC = options.get(OptionsCatalog.HASHING_DETERMINISTIC_KEY);
@@ -310,7 +287,6 @@ public class Options {
         COVERAGE_GLOBAL = options.get(OptionsCatalog.COVERAGE_GLOBAL_KEY);
         CORE_AS_INTERNAL = options.get(OptionsCatalog.CORE_AS_INTERNAL_KEY);
         STDLIB_AS_INTERNAL = options.get(OptionsCatalog.STDLIB_AS_INTERNAL_KEY);
-        LAZY_TRANSLATION_USER = options.hasBeenSet(OptionsCatalog.LAZY_TRANSLATION_USER_KEY) ? options.get(OptionsCatalog.LAZY_TRANSLATION_USER_KEY) : DEFAULT_LAZY;
         EXCEPTIONS_STORE_JAVA = options.get(OptionsCatalog.EXCEPTIONS_STORE_JAVA_KEY);
         EXCEPTIONS_PRINT_JAVA = options.get(OptionsCatalog.EXCEPTIONS_PRINT_JAVA_KEY);
         EXCEPTIONS_PRINT_UNCAUGHT_JAVA = options.get(OptionsCatalog.EXCEPTIONS_PRINT_UNCAUGHT_JAVA_KEY);
@@ -319,7 +295,6 @@ public class Options {
         EXCEPTIONS_WARN_OUT_OF_MEMORY = options.get(OptionsCatalog.EXCEPTIONS_WARN_OUT_OF_MEMORY_KEY);
         BACKTRACES_INTERLEAVE_JAVA = options.get(OptionsCatalog.BACKTRACES_INTERLEAVE_JAVA_KEY);
         BACKTRACES_LIMIT = options.get(OptionsCatalog.BACKTRACES_LIMIT_KEY);
-        BACKTRACES_OMIT_UNUSED = options.get(OptionsCatalog.BACKTRACES_OMIT_UNUSED_KEY);
         BACKTRACE_ON_INTERRUPT = options.get(OptionsCatalog.BACKTRACE_ON_INTERRUPT_KEY);
         BACKTRACE_ON_SIGALRM = options.hasBeenSet(OptionsCatalog.BACKTRACE_ON_SIGALRM_KEY) ? options.get(OptionsCatalog.BACKTRACE_ON_SIGALRM_KEY) : !EMBEDDED;
         BACKTRACE_ON_RAISE = options.get(OptionsCatalog.BACKTRACE_ON_RAISE_KEY);
@@ -344,14 +319,8 @@ public class Options {
         ARGV_GLOBAL_VALUES = options.get(OptionsCatalog.ARGV_GLOBAL_VALUES_KEY);
         ARGV_GLOBAL_FLAGS = options.get(OptionsCatalog.ARGV_GLOBAL_FLAGS_KEY);
         BUILDING_CORE_CEXTS = options.get(OptionsCatalog.BUILDING_CORE_CEXTS_KEY);
-        LAZY_TRANSLATION_LOG = options.get(OptionsCatalog.LAZY_TRANSLATION_LOG_KEY);
-        LOG_DYNAMIC_CONSTANT_LOOKUP = options.get(OptionsCatalog.LOG_DYNAMIC_CONSTANT_LOOKUP_KEY);
         ROPE_PRINT_INTERN_STATS = options.get(OptionsCatalog.ROPE_PRINT_INTERN_STATS_KEY);
         PREINITIALIZATION = options.get(OptionsCatalog.PREINITIALIZATION_KEY);
-        LAZY_BUILTINS = options.hasBeenSet(OptionsCatalog.LAZY_BUILTINS_KEY) ? options.get(OptionsCatalog.LAZY_BUILTINS_KEY) : DEFAULT_LAZY;
-        LAZY_TRANSLATION_CORE = options.hasBeenSet(OptionsCatalog.LAZY_TRANSLATION_CORE_KEY) ? options.get(OptionsCatalog.LAZY_TRANSLATION_CORE_KEY) : DEFAULT_LAZY;
-        BASICOPS_INLINE = options.get(OptionsCatalog.BASICOPS_INLINE_KEY);
-        PROFILE_ARGUMENTS = options.get(OptionsCatalog.PROFILE_ARGUMENTS_KEY);
         DEFAULT_CACHE = options.get(OptionsCatalog.DEFAULT_CACHE_KEY);
         METHOD_LOOKUP_CACHE = options.hasBeenSet(OptionsCatalog.METHOD_LOOKUP_CACHE_KEY) ? options.get(OptionsCatalog.METHOD_LOOKUP_CACHE_KEY) : DEFAULT_CACHE;
         DISPATCH_CACHE = options.hasBeenSet(OptionsCatalog.DISPATCH_CACHE_KEY) ? options.get(OptionsCatalog.DISPATCH_CACHE_KEY) : DEFAULT_CACHE;
@@ -384,23 +353,21 @@ public class Options {
         ARRAY_STRATEGY_CACHE = options.get(OptionsCatalog.ARRAY_STRATEGY_CACHE_KEY);
         ARRAY_UNINITIALIZED_SIZE = options.get(OptionsCatalog.ARRAY_UNINITIALIZED_SIZE_KEY);
         ARRAY_SMALL = options.get(OptionsCatalog.ARRAY_SMALL_KEY);
-        HASH_PACKED_ARRAY_MAX = options.get(OptionsCatalog.HASH_PACKED_ARRAY_MAX_KEY);
         PACK_UNROLL_LIMIT = options.get(OptionsCatalog.PACK_UNROLL_LIMIT_KEY);
         PACK_RECOVER_LOOP_MIN = options.get(OptionsCatalog.PACK_RECOVER_LOOP_MIN_KEY);
         CEXTS_MARKING_CACHE = options.get(OptionsCatalog.CEXTS_MARKING_CACHE_KEY);
         CEXTS_TONATIVE_STATS = options.get(OptionsCatalog.CEXTS_TONATIVE_STATS_KEY);
-        ROPE_DEPTH_THRESHOLD = options.get(OptionsCatalog.ROPE_DEPTH_THRESHOLD_KEY);
         GLOBAL_VARIABLE_MAX_INVALIDATIONS = options.get(OptionsCatalog.GLOBAL_VARIABLE_MAX_INVALIDATIONS_KEY);
         CLONE_DEFAULT = options.get(OptionsCatalog.CLONE_DEFAULT_KEY);
         INLINE_DEFAULT = options.get(OptionsCatalog.INLINE_DEFAULT_KEY);
         CORE_ALWAYS_CLONE = options.get(OptionsCatalog.CORE_ALWAYS_CLONE_KEY);
         ALWAYS_SPLIT_HONOR = options.hasBeenSet(OptionsCatalog.ALWAYS_SPLIT_HONOR_KEY) ? options.get(OptionsCatalog.ALWAYS_SPLIT_HONOR_KEY) : CLONE_DEFAULT;
+        NEVER_SPLIT_HONOR = options.get(OptionsCatalog.NEVER_SPLIT_HONOR_KEY);
         INLINE_NEEDS_CALLER_FRAME = options.hasBeenSet(OptionsCatalog.INLINE_NEEDS_CALLER_FRAME_KEY) ? options.get(OptionsCatalog.INLINE_NEEDS_CALLER_FRAME_KEY) : INLINE_DEFAULT;
         YIELD_ALWAYS_CLONE = options.hasBeenSet(OptionsCatalog.YIELD_ALWAYS_CLONE_KEY) ? options.get(OptionsCatalog.YIELD_ALWAYS_CLONE_KEY) : CLONE_DEFAULT;
         YIELD_ALWAYS_INLINE = options.hasBeenSet(OptionsCatalog.YIELD_ALWAYS_INLINE_KEY) ? options.get(OptionsCatalog.YIELD_ALWAYS_INLINE_KEY) : INLINE_DEFAULT;
         METHODMISSING_ALWAYS_CLONE = options.hasBeenSet(OptionsCatalog.METHODMISSING_ALWAYS_CLONE_KEY) ? options.get(OptionsCatalog.METHODMISSING_ALWAYS_CLONE_KEY) : CLONE_DEFAULT;
         METHODMISSING_ALWAYS_INLINE = options.hasBeenSet(OptionsCatalog.METHODMISSING_ALWAYS_INLINE_KEY) ? options.get(OptionsCatalog.METHODMISSING_ALWAYS_INLINE_KEY) : INLINE_DEFAULT;
-        CALL_WITH_BLOCK_ALWAYS_CLONE = options.hasBeenSet(OptionsCatalog.CALL_WITH_BLOCK_ALWAYS_CLONE_KEY) ? options.get(OptionsCatalog.CALL_WITH_BLOCK_ALWAYS_CLONE_KEY) : CLONE_DEFAULT;
         REGEXP_INSTRUMENT_CREATION = options.get(OptionsCatalog.REGEXP_INSTRUMENT_CREATION_KEY);
         REGEXP_INSTRUMENT_MATCH = options.get(OptionsCatalog.REGEXP_INSTRUMENT_MATCH_KEY);
         METRICS_TIME_PARSING_FILE = options.get(OptionsCatalog.METRICS_TIME_PARSING_FILE_KEY);
@@ -439,8 +406,6 @@ public class Options {
                 return FROZEN_STRING_LITERALS;
             case "ruby.rubygems":
                 return RUBYGEMS;
-            case "ruby.lazy-default":
-                return DEFAULT_LAZY;
             case "ruby.lazy-rubygems":
                 return LAZY_RUBYGEMS;
             case "ruby.patching":
@@ -471,8 +436,6 @@ public class Options {
                 return CORE_AS_INTERNAL;
             case "ruby.stdlib-as-internal":
                 return STDLIB_AS_INTERNAL;
-            case "ruby.lazy-translation-user":
-                return LAZY_TRANSLATION_USER;
             case "ruby.exceptions-store-java":
                 return EXCEPTIONS_STORE_JAVA;
             case "ruby.exceptions-print-java":
@@ -489,8 +452,6 @@ public class Options {
                 return BACKTRACES_INTERLEAVE_JAVA;
             case "ruby.backtraces-limit":
                 return BACKTRACES_LIMIT;
-            case "ruby.backtraces-omit-unused":
-                return BACKTRACES_OMIT_UNUSED;
             case "ruby.backtraces-on-interrupt":
                 return BACKTRACE_ON_INTERRUPT;
             case "ruby.backtraces-sigalrm":
@@ -539,22 +500,10 @@ public class Options {
                 return ARGV_GLOBAL_FLAGS;
             case "ruby.building-core-cexts":
                 return BUILDING_CORE_CEXTS;
-            case "ruby.lazy-translation-log":
-                return LAZY_TRANSLATION_LOG;
-            case "ruby.constant-dynamic-lookup-log":
-                return LOG_DYNAMIC_CONSTANT_LOOKUP;
             case "ruby.rope-print-intern-stats":
                 return ROPE_PRINT_INTERN_STATS;
             case "ruby.preinit":
                 return PREINITIALIZATION;
-            case "ruby.lazy-builtins":
-                return LAZY_BUILTINS;
-            case "ruby.lazy-translation-core":
-                return LAZY_TRANSLATION_CORE;
-            case "ruby.basic-ops-inline":
-                return BASICOPS_INLINE;
-            case "ruby.profile-arguments":
-                return PROFILE_ARGUMENTS;
             case "ruby.default-cache":
                 return DEFAULT_CACHE;
             case "ruby.method-lookup-cache":
@@ -619,8 +568,6 @@ public class Options {
                 return ARRAY_UNINITIALIZED_SIZE;
             case "ruby.array-small":
                 return ARRAY_SMALL;
-            case "ruby.hash-packed-array-max":
-                return HASH_PACKED_ARRAY_MAX;
             case "ruby.pack-unroll":
                 return PACK_UNROLL_LIMIT;
             case "ruby.pack-recover":
@@ -629,8 +576,6 @@ public class Options {
                 return CEXTS_MARKING_CACHE;
             case "ruby.cexts-tonative-stats":
                 return CEXTS_TONATIVE_STATS;
-            case "ruby.rope-depth-threshold":
-                return ROPE_DEPTH_THRESHOLD;
             case "ruby.global-variable-max-invalidations":
                 return GLOBAL_VARIABLE_MAX_INVALIDATIONS;
             case "ruby.clone-default":
@@ -641,6 +586,8 @@ public class Options {
                 return CORE_ALWAYS_CLONE;
             case "ruby.always-split-honor":
                 return ALWAYS_SPLIT_HONOR;
+            case "ruby.never-split-honor":
+                return NEVER_SPLIT_HONOR;
             case "ruby.inline-needs-caller-frame":
                 return INLINE_NEEDS_CALLER_FRAME;
             case "ruby.yield-always-clone":
@@ -651,8 +598,6 @@ public class Options {
                 return METHODMISSING_ALWAYS_CLONE;
             case "ruby.method-missing-always-inline":
                 return METHODMISSING_ALWAYS_INLINE;
-            case "ruby.call-with-block-always-clone":
-                return CALL_WITH_BLOCK_ALWAYS_CLONE;
             case "ruby.regexp-instrument-creation":
                 return REGEXP_INSTRUMENT_CREATION;
             case "ruby.regexp-instrument-match":
@@ -673,5 +618,6 @@ public class Options {
                 return null;
         }
     }
+
 }
 // @formatter:on

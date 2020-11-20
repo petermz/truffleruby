@@ -9,16 +9,16 @@
  */
 package org.truffleruby.core.tracepoint;
 
-import org.truffleruby.Layouts;
 import org.truffleruby.RubyContext;
 import org.truffleruby.core.binding.BindingNodes;
+import org.truffleruby.core.proc.RubyProc;
 import org.truffleruby.core.symbol.RubySymbol;
 import org.truffleruby.core.thread.GetCurrentRubyThreadNode;
 
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.instrumentation.EventContext;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.ConditionProfile;
+import org.truffleruby.core.thread.RubyThread;
 
 class TracePointEventNode extends TraceBaseEventNode {
 
@@ -26,25 +26,25 @@ class TracePointEventNode extends TraceBaseEventNode {
 
     private final ConditionProfile inTracePointProfile = ConditionProfile.create();
 
-    private final DynamicObject tracePoint;
-    private final DynamicObject proc;
+    private final RubyTracePoint tracePoint;
+    private final RubyProc proc;
     private final RubySymbol event;
 
     public TracePointEventNode(
             RubyContext context,
             EventContext eventContext,
-            DynamicObject tracePoint,
+            RubyTracePoint tracePoint,
             RubySymbol event) {
         super(context, eventContext);
         this.tracePoint = tracePoint;
-        this.proc = Layouts.TRACE_POINT.getProc(tracePoint);
+        this.proc = tracePoint.proc;
         this.event = event;
     }
 
     @Override
     protected void onEnter(VirtualFrame frame) {
-        final DynamicObject rubyThread = getCurrentRubyThreadNode.execute();
-        final TracePointState state = Layouts.THREAD.getTracePointState(rubyThread);
+        final RubyThread rubyThread = getCurrentRubyThreadNode.execute();
+        final TracePointState state = rubyThread.tracePointState;
 
         if (inTracePointProfile.profile(state.insideProc)) {
             return;

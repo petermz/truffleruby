@@ -179,6 +179,10 @@
       <property name="message" value='Replace @Cached("create()") with @Cached.'/>
     </module>
     <module name="RegexpSinglelineJava">
+      <property name="format" value='@Cached\.'/>
+      <property name="message" value='Use a nested import instead.'/>
+    </module>
+    <module name="RegexpSinglelineJava">
       <property name="format" value='@CompilerDirectives\.TruffleBoundary'/>
       <property name="message" value='Use @TruffleBoundary instead.'/>
     </module>
@@ -199,15 +203,20 @@
       <property name="message" value='Use a EMPTY_type_ARRAY constant instead.'/>
     </module>
     <module name="RegexpSinglelineJava">
-      <property name="format" value='\bPrintWriter\b'/>
-      <property name="message" value='Use PrintStream instead, PrintWriter does not consistently flush, even when writing \n.'/>
-    </module>
-    <module name="RegexpSinglelineJava">
       <property name="format" value="transferToInterpreterOnException"/>
       <property name="message" value="Don't use transferToInterpreterOnException"/>
     </module>
+    <module name="RegexpSinglelineJava">
+      <property name="format" value='"isRuby(?!Value|DynamicObject|SymbolOrString|Rational)'/> <!-- Rational is not a builtin type -->
+      <property name="message" value="Type the argument instead of using a positive is Ruby* guard."/>
+    </module>
+    <module name="RegexpSinglelineJava">
+      <property name="format" value='"isNil'/>
+      <property name="message" value="Type the argument as Nil instead of using a positive isNil() guard."/>
+    </module>
     <module name="IllegalType">
-      <property name="illegalClassNames" value="TruffleObject"/>
+      <!-- Use PrintStream instead of PrintWriter, PrintWriter does not consistently flush, even when writing \n.-->
+      <property name="illegalClassNames" value="TruffleObject,DynamicObject,PrintWriter"/>
     </module>
   </module>
   <module name="RegexpMultiline">
@@ -220,6 +229,10 @@
   </module>
   <module name="RegexpMultiline">
     <property name="format" value="CompilerDirectives\.transferToInterpreterAndInvalidate\(\);\s+\w+Node\s+=\s+(?!insert\()"/>
+    <property name="message" value="Lazily initialized child nodes must be explicitly inserted into the AST."/>
+  </module>
+  <module name="RegexpMultiline">
+    <property name="format" value="CompilerDirectives\.transferToInterpreterAndInvalidate\(\);\s+\w+\s+=\s+(?!insert\()\w+\.create\("/>
     <property name="message" value="Lazily initialized child nodes must be explicitly inserted into the AST."/>
   </module>
   <module name="RegexpHeader">

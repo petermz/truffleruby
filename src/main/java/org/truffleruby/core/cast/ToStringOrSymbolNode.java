@@ -9,47 +9,46 @@
  */
 package org.truffleruby.core.cast;
 
-import org.truffleruby.Layouts;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.core.symbol.RubySymbol;
 import org.truffleruby.language.RubyContextSourceNode;
-import org.truffleruby.language.RubyGuards;
 import org.truffleruby.language.RubyNode;
 import org.truffleruby.language.control.RaiseException;
-import org.truffleruby.language.dispatch.CallDispatchHeadNode;
+import org.truffleruby.language.dispatch.DispatchNode;
 
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.NodeChild;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.frame.VirtualFrame;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.BranchProfile;
+
 
 /** Convert objects to a String by calling #to_str, but leave existing Strings or Symbols as they are. */
 @NodeChild(value = "child", type = RubyNode.class)
 public abstract class ToStringOrSymbolNode extends RubyContextSourceNode {
 
-    @Child private CallDispatchHeadNode toStr;
+    @Child private DispatchNode toStr;
 
     @Specialization
     protected RubySymbol coerceRubySymbol(RubySymbol symbol) {
         return symbol;
     }
 
-    @Specialization(guards = "isRubyString(string)")
-    protected DynamicObject coerceRubyString(DynamicObject string) {
+    @Specialization
+    protected RubyString coerceRubyString(RubyString string) {
         return string;
     }
 
     @Specialization(guards = { "!isRubySymbol(object)", "!isRubyString(object)" })
-    protected DynamicObject coerceObject(VirtualFrame frame, Object object,
+    protected RubyString coerceObject(VirtualFrame frame, Object object,
             @Cached BranchProfile errorProfile) {
         final Object coerced;
         try {
             coerced = callToStr(object);
         } catch (RaiseException e) {
             errorProfile.enter();
-            if (Layouts.BASIC_OBJECT.getLogicalClass(e.getException()) == coreLibrary().noMethodErrorClass) {
+            if (e.getException().getLogicalClass() == coreLibrary().noMethodErrorClass) {
                 throw new RaiseException(
                         getContext(),
                         coreExceptions().typeErrorNoImplicitConversion(object, "String", this));
@@ -58,8 +57,8 @@ public abstract class ToStringOrSymbolNode extends RubyContextSourceNode {
             }
         }
 
-        if (RubyGuards.isRubyString(coerced)) {
-            return (DynamicObject) coerced;
+        if (coerced instanceof RubyString) {
+            return (RubyString) coerced;
         } else {
             errorProfile.enter();
             throw new RaiseException(
@@ -71,7 +70,7 @@ public abstract class ToStringOrSymbolNode extends RubyContextSourceNode {
     private Object callToStr(Object object) {
         if (toStr == null) {
             CompilerDirectives.transferToInterpreterAndInvalidate();
-            toStr = insert(CallDispatchHeadNode.createPrivate());
+            toStr = insert(DispatchNode.create());
         }
         return toStr.call(object, "to_str");
     }

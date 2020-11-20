@@ -43,7 +43,7 @@ public class RubyParsingRequestNode extends RubyBaseRootNode implements Internal
         final TranslatorDriver translator = new TranslatorDriver(context);
 
         final RubyRootNode rootNode = translator.parse(
-                new RubySource(source, RubyContext.getPath(source)),
+                new RubySource(source, context.getSourcePath(source)),
                 ParserContext.TOP_LEVEL,
                 argumentNames,
                 null,
@@ -75,6 +75,7 @@ public class RubyParsingRequestNode extends RubyBaseRootNode implements Internal
         printTimeMetric("before-script");
         try {
             final Object value = callNode.call(RubyArguments.pack(
+                    null,
                     null,
                     null,
                     method,

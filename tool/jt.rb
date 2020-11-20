@@ -101,6 +101,9 @@ SUBPROCESSES = []
 # Forward signals to sub-processes, so they get notified when sending a signal to jt
 [:SIGINT, :SIGTERM].each do |signal|
   trap(signal) do
+    # Enables command line signals (e.g. Ctrl+C) when waiting for input if there are no subprocesses.
+    raise Interrupt if SUBPROCESSES.empty?
+
     SUBPROCESSES.each do |pid|
       Utilities.send_signal(signal, pid)
     end
@@ -142,7 +145,7 @@ module Utilities
 
   def jvmci_update_and_version
     if env = ENV['JVMCI_VERSION']
-      unless /8u(\d+)-(jvmci-\d+\.\d+-b\d+)/ =~ env
+      unless /8u(\d+(?:\+\d+)?)-(jvmci-\d+\.\d+-b\d+)/ =~ env
         raise 'Could not parse JDK update and JVMCI version from $JVMCI_VERSION'
       end
     else
@@ -161,6 +164,7 @@ module Utilities
       Process.kill(signal, pid)
     rescue Errno::ESRCH
       # Already killed
+      STDERR.puts "Process #{pid} not found"
       nil
     end
   end
@@ -189,8 +193,10 @@ module Utilities
     @ruby_name ||= ENV['RUBY_BIN'] || 'jvm'
     ruby_launcher = if @ruby_name == 'ruby'
                       ENV['RBENV_ROOT'] ? `rbenv which ruby`.chomp : which('ruby')
-                    elsif File.executable?(@ruby_name)
+                    elsif File.executable?(@ruby_name) and File.file?(@ruby_name)
                       @ruby_name
+                    elsif @ruby_name.start_with?('/') and File.directory?(@ruby_name)
+                      "#{@ruby_name}/bin/ruby"
                     else
                       graalvm = "#{TRUFFLERUBY_DIR}/mxbuild/truffleruby-#{@ruby_name}"
                       "#{graalvm}/#{language_dir(graalvm)}/ruby/bin/ruby"
@@ -330,6 +336,19 @@ module Utilities
   def raw_sh_failed_status
     `false`
     $?
+  end
+
+  def terminate_process(pid, timeout = 10)
+    send_signal(:SIGTERM, pid)
+    begin
+      Timeout.timeout(timeout) do
+        Process.wait pid
+      end
+    rescue Timeout::Error
+      send_signal(:SIGKILL, pid)
+      Process.wait pid
+    end
+    STDERR.puts "Process #{pid} terminated"
   end
 
   def raw_sh_with_timeout(timeout, pid)
@@ -561,14 +580,38 @@ module Utilities
     return [args, []] unless delimiter_index
     [args[0...delimiter_index], args[(delimiter_index + 1)..-1]]
   end
+
+  def with_color(color_code, &block)
+    print color_code if STDOUT.tty?
+    begin
+      result = yield block
+    ensure
+      print TERM_COLOR_DEFAULT if STDOUT.tty?
+    end
+    result
+  end
+
+  def boxed(&block)
+    puts ''
+    puts '============================================================'
+    puts ''
+    result = yield block
+    puts ''
+    puts '============================================================'
+    puts ''
+    result
+  end
+
+  # https://misc.flogisoft.com/bash/tip_colors_and_formatting
+  TERM_COLOR_RED = "\e[31m"
+  TERM_COLOR_DEFAULT = "\e[39m"
 end
 
 module Commands
   include Utilities
 
   def help
-    # <<~ cannot be used since idea thinks TR is 2.1 and displays it as error
-    puts <<-TXT.gsub(/^ {6}/, '')
+    puts <<~TXT
       Usage: jt [options] COMMAND [command-options]
           Where options are:
           --build                   Runs `jt build` before the command
@@ -576,7 +619,8 @@ module Commands
           --use|-u [RUBY_SELECTOR]  Specifies which Ruby interpreter should be used in a given command. jt will apply
                                     options based on the given Ruby interpreter. Allowed values are:
                                     * name given to the --name option during build
-                                    * absolute path of a Ruby interpreter
+                                    * absolute path to a Ruby interpreter executable
+                                    * prefix of a Ruby interpreter
                                     * 'ruby' which uses the current Ruby executable in the PATH
                                     Default value is --use jvm, therefore all commands run on truffleruby-jvm by default.
                                     The default can be changed with `export RUBY_BIN=RUBY_SELECTOR`
@@ -587,19 +631,19 @@ module Commands
             parser                            build the parser
             options                           build the options
             core-symbols                      build the core symbols
-        jt build graalvm [options] [mx_options] [-- mx_build_options]
+        jt build graalvm [options] [mx options] [-- mx build options]
             graalvm                           build a GraalVM based on the given env file, the default is a minimal
                                               GraalVM with JVM and Truffleruby only available in mxbuild/truffleruby-jvm,
                                               the Ruby is symlinked into rbenv or chruby if available
             options:
-              --sforceimports                 run sforceimports before building (default: false)
+              --sforceimports                 run `mx sforceimports` before building (default: false)
               --env|-e                        mx env file used to build the GraalVM, default is "jvm"
               --name|-n NAME                  specify the name of the build "mxbuild/truffleruby-NAME",
                                               it is also linked in your ruby manager (if found) under the same name,
                                               by default it is the name of the mx env file,
                                               the named build stays until it is rebuilt or deleted manually
-            mx_options                        options passed directly to mx
-            mx_build_options                  options passed to the build command of mx
+            mx options                        options passed directly to mx
+            mx build options                  options passed to the 'build' command of mx
 
       jt build_stats [--json] <attribute>            prints attribute's value from build process (e.g., binary size)
       jt clean                                       clean
@@ -637,6 +681,7 @@ module Commands
       jt test specs fast                             run all specs except sub-processes, GC, sleep, ...
       jt test spec/ruby/language                     run specs in this directory
       jt test spec/ruby/language/while_spec.rb       run specs in this file
+      jt test ... -- --jdebug                        run specs with the Java debugger
       jt test compiler                               run compiler tests
       jt test integration [TESTS]                    run integration tests
       jt test bundle [--jdebug]                      tests using bundler
@@ -644,7 +689,7 @@ module Commands
       jt test ecosystem [TESTS] [options]            tests using the wider ecosystem such as bundler, Rails, etc
       jt test cexts [--no-openssl] [--no-gems] [test_names...]
                                                      run C extension tests (set GEM_HOME)
-      jt test unit                                   run Java unittests
+      jt test unit [unittest flags] [-- mx options]  run Java unittests
       jt test tck                                    run tck tests
       jt gem-test-pack                               check that the gem test pack is downloaded, or download it for you, and print the path
       jt rubocop [rubocop options]                   run rubocop rules (using ruby available in the environment)
@@ -791,11 +836,15 @@ module Commands
         core_load_path = false
       when '--reveal'
         vm_args += %w[--vm.ea --vm.esa] unless truffleruby_native?
+      when '--check-compilation'
+        add_experimental_options.call
+        vm_args << '--engine.CompilationFailureAction=ExitVM'
+        vm_args << '--engine.TreatPerformanceWarningsAsErrors=all'
       when '--stress'
         add_experimental_options.call
         vm_args << '--engine.CompileImmediately'
         vm_args << '--engine.BackgroundCompilation=false'
-        vm_args << '--engine.CompilationFailureAction=ExitVM'
+        args.unshift '--check-compilation'
       when '--asm'
         vm_args += %w[--vm.XX:+UnlockDiagnosticVMOptions --vm.XX:CompileCommand=print,*::callRoot]
       when '--jdebug'
@@ -1144,7 +1193,7 @@ module Commands
     env = {}
     env['TRUFFLERUBYOPT'] = [*ENV['TRUFFLERUBYOPT'], '--experimental-options', '--exceptions-print-java=true'].join(' ')
 
-    select_tests('test/truffle/compiler', args).each do |test_script|
+    run_tests('test/truffle/compiler', args) do |test_script|
       sh env, test_script
     end
   end
@@ -1175,18 +1224,18 @@ module Commands
           expected_file = "#{dir}/expected.txt"
           expected = File.read(expected_file)
           unless actual == expected
-            abort <<-EOS
-C extension #{dir} didn't work as expected
+            abort <<~EOS
+              C extension #{dir} didn't work as expected
 
-Actual:
-#{actual}
+              Actual:
+              #{actual}
 
-Expected:
-#{expected}
+              Expected:
+              #{expected}
 
-Diff:
-#{diff(expected_file, output_file)}
-EOS
+              Diff:
+              #{diff(expected_file, output_file)}
+            EOS
           end
         ensure
           File.delete output_file if File.exist? output_file
@@ -1242,7 +1291,7 @@ EOS
     end
   end
 
-  private def select_tests(tests_path, tests)
+  private def run_tests(tests_path, tests)
     tests_path = "#{TRUFFLERUBY_DIR}/#{tests_path}"
     test_names = tests.empty? ? '*' : '{' + tests.join(',') + '}'
 
@@ -1254,11 +1303,22 @@ EOS
       exit 1
     end
 
-    candidates
+    STDERR.puts
+    candidates.each do |test_script|
+      STDERR.puts "[jt] Running #{test_script} ..."
+      start = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+      begin
+        yield test_script
+      ensure
+        finish = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+        duration = finish - start
+        STDERR.puts "[jt] #{test_script} took #{'%.1f' % duration}s\n\n\n"
+      end
+    end
   end
 
   private def test_integration(*args)
-    select_tests('test/truffle/integration', args).each do |test_script|
+    run_tests('test/truffle/integration', args) do |test_script|
       sh test_script
     end
   end
@@ -1266,7 +1326,7 @@ EOS
   private def test_gems(*args)
     gem_test_pack
 
-    select_tests('test/truffle/gems', args).each do |test_script|
+    run_tests('test/truffle/gems', args) do |test_script|
       sh test_script
     end
   end
@@ -1274,7 +1334,7 @@ EOS
   private def test_ecosystem(*args)
     gem_test_pack if gem_test_pack?
 
-    select_tests('test/truffle/ecosystem', args).each do |test_script|
+    run_tests('test/truffle/ecosystem', args) do |test_script|
       sh test_script, *(gem_test_pack if gem_test_pack?)
     end
   end
@@ -1298,6 +1358,7 @@ EOS
     gems = %w[algebrick]
 
     gem_server = spawn('gem', 'server', '-b', '127.0.0.1', '-p', '0', '-d', "#{gem_test_pack}/gems")
+    SUBPROCESSES << gem_server
     begin
       ports = find_ports_for_pid(gem_server)
       raise 'More than one port opened' if ports.lines.size > 1
@@ -1335,13 +1396,16 @@ EOS
                 '-Sbundle', 'exec', '-V', 'rake')
             end
           ensure
+            STDERR.puts 'Removing temp dir'
             FileUtils.remove_entry_secure temp_dir
           end
         end
       end
     ensure
-      Process.kill :INT, gem_server
-      Process.wait gem_server
+      STDERR.puts 'Terminating gem server'
+      terminate_process(gem_server)
+      SUBPROCESSES.delete(gem_server)
+      STDERR.puts 'gem server terminated'
     end
   end
 
@@ -1382,7 +1446,7 @@ EOS
     args, ruby_args = args_split(args)
 
     vm_args, ruby_args, parsed_options = ruby_options({}, ['--reveal', *ruby_args])
-    vm_args << '--vm.Xmx2G'
+    vm_args << (truffleruby_native? ? '--vm.Xmx3G' : '--vm.Xmx2G')
     vm_args << '--polyglot' unless truffleruby_native?
 
     raise "unsupported options #{parsed_options}" unless parsed_options.empty?
@@ -1788,9 +1852,7 @@ EOS
     vm_args = []
     if truffleruby?
       if truffleruby_compiler?
-        vm_args << '--experimental-options'
-        vm_args << '--engine.CompilationFailureAction=ExitVM'
-        vm_args << '--engine.TreatPerformanceWarningsAsErrors=all'
+        vm_args << '--check-compilation'
       else
         STDERR.puts 'WARNING: benchmarking without the GraalVM compiler'
       end
@@ -1824,7 +1886,8 @@ EOS
       }
     end
     raw_sh "#{repo}/stackcollapse-graalvm.rb", profile_data_file, out: flamegraph_data_file
-    raw_sh "#{repo}/flamegraph.pl", flamegraph_data_file, out: svg_filename
+    unit = args.any?(/^--cpusampler\.Period=/) ? [] : ['--countname', 'ms']
+    raw_sh "#{repo}/flamegraph.pl", *unit, flamegraph_data_file, out: svg_filename
 
     app_open svg_filename
   end
@@ -1955,6 +2018,41 @@ EOS
     destination
   end
 
+  private def sforceimports? (mx_base_args)
+    scheckimports_output = mx(*mx_base_args, 'scheckimports', '--ignore-uncommitted', '--warn-only', capture: :both)
+
+    unless scheckimports_output.empty?
+      # Don't ask to update, just warn.
+      if ENV['JT_IMPORTS_DONT_ASK'] || !STDIN.tty?
+        with_color(TERM_COLOR_RED) do
+          boxed do
+            puts scheckimports_output
+            puts <<~MESSAGE
+              You might want to:
+              * use the version of graal in suite.py, then use "jt build --sforceimports", useful when building TruffleRuby and not changing graal at the same time (most common)
+              * update the graal version in suite.py, then use "mx scheckimports", useful when explicitly updating the default graal version of TruffleRuby (rare)
+              * test TruffleRuby with a different graal version with your own changes in graal, then you can ignore this warning
+            MESSAGE
+          end
+        end
+        false
+      else
+        # Ask to update imports.
+        with_color(TERM_COLOR_RED) do
+          puts "\nNOTE: Set env variable JT_IMPORTS_DONT_ASK to always answer 'no' to this prompt.\n\n"
+          puts scheckimports_output
+          input = ''
+          until %w(y n).include? input
+            print 'Do you want to checkout the supported version of graal as specified in truffleruby\'s suite.py? (runs `mx sforceimports`) [y/n] '
+            input = STDIN.gets.chomp
+          end
+          puts ''
+          input == 'y'
+        end
+      end
+    end
+  end
+
   private def build_graalvm(*options)
     raise 'use --env jvm-ce instead' if options.delete('--graal')
     raise 'use --env native instead' if options.delete('--native')
@@ -1971,26 +2069,25 @@ EOS
             'jvm'
           end
     raise 'Cannot use both --use and --env' if defined?(@ruby_name)
-    @ruby_name = env
 
-    name = 'truffleruby-' + if (i = options.index('--name') || options.index('-n'))
-                              options.delete_at i
-                              options.delete_at i
-                            else
-                              env
-                            end
+    @ruby_name = if (i = options.index('--name') || options.index('-n'))
+                   options.delete_at i
+                   options.delete_at i
+                 else
+                   env
+                 end
 
-    cloned = env.include?('ee') && clone_enterprise
-
-    if options.delete('--sforceimports')
-      mx('-p', TRUFFLERUBY_DIR, 'sforceimports')
-      checkout_enterprise_revision(env) if env.include?('ee')
-    else
-      checkout_enterprise_revision(env) if cloned
-    end
-
+    name = "truffleruby-#{@ruby_name}"
     mx_base_args = ['-p', TRUFFLERUBY_DIR, '--env', env]
-    mx(*mx_base_args, 'scheckimports', '--ignore-uncommitted', '--warn-only')
+
+    # Must clone enterprise before running `mx scheckimports` in `sforceimports?`
+    cloned = env.include?('ee') && clone_enterprise
+    checkout_enterprise_revision(env) if cloned
+
+    if options.delete('--sforceimports') || sforceimports?(mx_base_args)
+      mx('-p', TRUFFLERUBY_DIR, 'sforceimports')
+      checkout_enterprise_revision(env) if env.include?('ee') && !cloned
+    end
 
     mx_options, mx_build_options = args_split(options)
     mx_args = mx_base_args + mx_options
@@ -2101,8 +2198,7 @@ EOS
   def command_format(*args)
     ENV['ECLIPSE_EXE'] ||= install_eclipse
     mx 'eclipseformat', '--no-backup', '--primary', *args
-    format_specializations_visibility
-    format_specializations_arguments
+    format_specializations_check
   end
 
   private def check_filename_length
@@ -2147,11 +2243,13 @@ EOS
 
   private def check_options
     build('options')
-    diff = sh 'git', 'diff', 'src/main/java/org/truffleruby/options/Options.java', capture: :out
-    unless diff.empty?
-      STDERR.puts 'DIFF:'
-      STDERR.puts diff
-      abort "Options.java must be regenerated by 'jt build options'"
+    ['Options.java', 'LanguageOptions.java'].each do |file|
+      diff = sh 'git', 'diff', "src/main/java/org/truffleruby/options/#{file}", capture: :out
+      unless diff.empty?
+        STDERR.puts 'DIFF:'
+        STDERR.puts diff
+        abort "#{file} must be regenerated by 'jt build options'"
+      end
     end
   end
 
@@ -2174,7 +2272,7 @@ EOS
     end
   end
 
-  private def check_documentation_urls
+  def check_documentation_urls
     url_base = 'https://github.com/oracle/truffleruby/blob/master/doc/'
     # Explicit list of URLs, so they can be added manually
     # Notably, Ruby installers reference the LLVM urls
@@ -2196,7 +2294,7 @@ EOS
     hardcoded_urls.each_line do |line|
       abort "Could not parse #{line.inspect}" unless /(.+?):(\d+):.+?(https:.+?)[ "'\n]/ =~ line
       file, line, url = $1, $2, $3
-      if file != 'tool/jt.rb' and !known_hardcoded_urls.include?(url)
+      if !%w[tool/jt.rb tool/generate-user-doc.rb].include?(file) and !known_hardcoded_urls.include?(url)
         abort "Found unknown hardcoded url #{url} in #{file}:#{line}, add it in tool/jt.rb"
       end
     end
@@ -2221,7 +2319,35 @@ EOS
   end
 
   def checkstyle
-    mx 'checkstyle', '-f', '--primary'
+    output = mx 'checkstyle', '-f', '--primary', capture: :both, continue_on_failure: true
+    status = $?
+
+    unused_import = /: Unused import -/
+    if !status.success? and output =~ unused_import
+      puts 'Automatically removing unused imports'
+      output.lines.reverse.grep(unused_import) do |line|
+        path, lineno, _ = line.split(':', 3)
+        lineno = Integer(lineno)
+
+        puts "Removing unused import in #{path}:#{lineno}"
+        lines = File.readlines path
+        lines.delete_at(lineno-1)
+        File.write path, lines.join
+      end
+
+      # Still error out as the removed imports should be committed, but mark them as fixed
+      output = output.lines.map { |line| line =~ unused_import ? "[FIXED] #{line}" : line }.join
+      puts
+    end
+
+    STDERR.puts output
+    unless status.success?
+      exit status.exitstatus
+    end
+  end
+
+  def spotbugs
+    mx 'ruby_spotbugs'
   end
 
   module Formatting
@@ -2271,6 +2397,14 @@ EOS
       end
     end
 
+    def format_imports
+      each_file do |content|
+        content
+          .sub(/\n{3,}import /, "\n\nimport ")
+          .sub(/^(import .+;)\n{3,}public/, "\\1\n\npublic")
+      end
+    end
+
     private
 
     def split_arguments(line)
@@ -2278,22 +2412,27 @@ EOS
       split_points = []
       i += 1 while line[i] != '('
       i += 1
-      brackets = 1
+      parens = 1
+      generic = 0
       split_points << i # ( start of arguments
 
 
       while i < line.size
         case line[i]
         when '('
-          brackets += 1
+          parens += 1
         when ')'
-          brackets -= 1
-          if brackets == 0
+          parens -= 1
+          if parens == 0
             split_points << i
             break
           end
+        when '<'
+          generic += 1
+        when '>'
+          generic -= 1
         when ','
-          split_points << i if brackets == 1
+          split_points << i if parens == 1 && generic == 0
         else
           # nothing to do
         end
@@ -2311,11 +2450,23 @@ EOS
       segments.map { |segment| segment.gsub(/\A,?\s+|\s+,?\Z/, '') }
     end
 
-    def iterate(&update)
+    def each_file
       changed = false
-
       Dir.glob(File.join(TRUFFLERUBY_DIR, 'src', '**', '*.java')) do |file|
         content = File.read file
+        new_content = yield content
+
+        if content != new_content
+          puts "#{file} updated"
+          changed = true
+          File.write file, new_content
+        end
+      end
+      changed
+    end
+
+    def iterate(&update)
+      each_file do |content|
         new_content = ''
         lines = content.lines.to_a
 
@@ -2331,7 +2482,7 @@ EOS
           # look for end of annotation
           while braces != 0
             new_content << line
-            line   = lines.shift
+            line = lines.shift
             braces += count_braces(line)
           end
 
@@ -2347,11 +2498,11 @@ EOS
           end
 
           # look for whole declaration
-          braces      = count_braces(line)
+          braces = count_braces(line)
           declaration = [line]
           while braces != 0
             # new_content << line
-            line   = lines.shift
+            line = lines.shift
             braces += count_braces(line)
             declaration << line
           end
@@ -2360,14 +2511,8 @@ EOS
           declaration.each { |l| new_content << l }
         end
 
-        if content != new_content
-          puts "#{file} updated"
-          changed = true
-          File.write file, new_content
-        end
+        new_content
       end
-
-      changed
     end
 
     def count_braces(line, brackets = '()')
@@ -2381,6 +2526,12 @@ EOS
 
   def format_specializations_arguments
     Formatting.format_specializations_arguments
+  end
+
+  def format_specializations_check
+    abort 'Some Specializations were not protected.' if format_specializations_visibility
+    abort 'Some Specializations were not properly formatted.' if format_specializations_arguments
+    abort 'There were extra blank lines around imports.' if Formatting.format_imports
   end
 
   def lint(*args)
@@ -2404,18 +2555,17 @@ EOS
     sh 'tool/lint.sh' if changed['.c']
     if fast
       checkstyle if changed['.java']
-      command_format if changed['.java']
+      command_format if changed['.java'] # includes #format_specializations_check
     else
-      mx 'gate', '--tags', 'style'
-      abort 'Some Specializations were not protected.' if format_specializations_visibility
-      abort 'Some Specializations were not properly formatted.' if format_specializations_arguments
+      mx 'gate', '--tags', 'style' # mx eclipseformat, mx checkstyle and a few more checks
+      format_specializations_check
     end
     shellcheck if changed['.sh'] or changed['.inc']
 
     # TODO (pitr-ch 11-Aug-2019): consider running all tasks in the `mx gate --tags fullbuild`
     #  - includes verifylibraryurls though
     #  - building with jdt in the ci definition could be dropped since fullbuild builds with JDT
-    mx 'spotbugs' unless fast
+    spotbugs unless fast
 
     mx 'verify-ci' if changed['.py']
 
@@ -2437,10 +2587,23 @@ EOS
     require_relative 'docker'
     JT::Docker.new.docker(*args)
   end
+
+  def visualvm
+    raw_sh "#{graalvm_home}/bin/jvisualvm"
+  end
 end
 
 class JT
   include Commands
+
+  def self.ruby(*args)
+    jt = JT.new
+    jt.send(:run_ruby, *args)
+  end
+
+  def self.gem_test_pack
+    JT.new.gem_test_pack
+  end
 
   def main(args)
     args = args.dup

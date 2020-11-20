@@ -10,20 +10,10 @@
 
 module Truffle
   module IOOperations
-    def self.last_line(a_binding)
-      Truffle::KernelOperations.frame_local_variable_get(:$_, a_binding)
-    end
-    Truffle::Graal.always_split(method(:last_line))
-
-    def self.set_last_line(value, a_binding)
-      Truffle::KernelOperations.frame_local_variable_set(:$_, a_binding, value)
-    end
-    Truffle::Graal.always_split(method(:set_last_line))
-
-    def self.print(io, args, last_line_binding)
+    def self.print(io, args, last_line_storage)
       if args.empty?
-        raise 'last_line_binding is required' if Primitive.nil? last_line_binding
-        io.write Truffle::IOOperations.last_line(last_line_binding).to_s
+        raise 'last_line_binding is required' if Primitive.nil? last_line_storage
+        io.write Primitive.io_last_line_get(last_line_storage).to_s
       else
         args.each { |o| io.write o.to_s }
       end
@@ -42,13 +32,16 @@ module Truffle
           elsif arg.kind_of?(String)
             # might be a Foreign String we need to convert
             str = arg.to_str
-          elsif Thread.guarding? arg
-            str = '[...]'
           elsif (ary = Truffle::Type.rb_check_convert_type(arg, Array, :to_ary))
-            Thread.recursion_guard arg do
+            recursive = Truffle::ThreadOperations.detect_recursion(arg) do
               ary.each { |a| puts(io, a) }
             end
-            str = nil
+
+            if recursive
+              str = '[...]'
+            else
+              str = nil
+            end
           else
             str = arg.to_s
             str = Truffle::Type.rb_any_to_s(arg) unless Primitive.object_kind_of?(str, String)

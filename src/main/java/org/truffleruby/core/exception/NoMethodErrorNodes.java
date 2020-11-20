@@ -9,17 +9,21 @@
  */
 package org.truffleruby.core.exception;
 
-import org.truffleruby.Layouts;
+import com.oracle.truffle.api.dsl.CachedLanguage;
+import org.truffleruby.RubyLanguage;
 import org.truffleruby.builtins.CoreMethod;
 import org.truffleruby.builtins.CoreMethodArrayArgumentsNode;
 import org.truffleruby.builtins.CoreModule;
 import org.truffleruby.builtins.Primitive;
 import org.truffleruby.builtins.PrimitiveArrayArgumentsNode;
+import org.truffleruby.core.array.RubyArray;
+import org.truffleruby.core.klass.RubyClass;
+import org.truffleruby.language.Nil;
 import org.truffleruby.language.Visibility;
-import org.truffleruby.language.objects.AllocateObjectNode;
+import org.truffleruby.language.objects.AllocateHelperNode;
 
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.object.DynamicObject;
+import com.oracle.truffle.api.object.Shape;
 
 @CoreModule(value = "NoMethodError", isClass = true)
 public abstract class NoMethodErrorNodes {
@@ -27,14 +31,15 @@ public abstract class NoMethodErrorNodes {
     @CoreMethod(names = { "__allocate__", "__layout_allocate__" }, constructor = true, visibility = Visibility.PRIVATE)
     public abstract static class AllocateNode extends CoreMethodArrayArgumentsNode {
 
-        @Child private AllocateObjectNode allocateObjectNode = AllocateObjectNode.create();
+        @Child private AllocateHelperNode allocateNode = AllocateHelperNode.create();
 
         @Specialization
-        protected DynamicObject allocateNoMethodError(DynamicObject rubyClass) {
-            return allocateObjectNode
-                    .allocate(
-                            rubyClass,
-                            Layouts.NO_METHOD_ERROR.build(nil, null, null, nil, null, null, null, nil, nil));
+        protected RubyNoMethodError allocateNoMethodError(RubyClass rubyClass,
+                @CachedLanguage RubyLanguage language) {
+            final Shape shape = allocateNode.getCachedShape(rubyClass);
+            final RubyNoMethodError instance = new RubyNoMethodError(rubyClass, shape, nil, null, nil, null, nil, nil);
+            allocateNode.trace(instance, this, language);
+            return instance;
         }
 
     }
@@ -43,8 +48,8 @@ public abstract class NoMethodErrorNodes {
     public abstract static class ArgsNode extends CoreMethodArrayArgumentsNode {
 
         @Specialization
-        protected Object args(DynamicObject self) {
-            return Layouts.NO_METHOD_ERROR.getArgs(self);
+        protected Object args(RubyNoMethodError self) {
+            return self.args;
         }
 
     }
@@ -53,8 +58,9 @@ public abstract class NoMethodErrorNodes {
     public abstract static class ArgsSetNode extends PrimitiveArrayArgumentsNode {
 
         @Specialization
-        protected Object setArgs(DynamicObject error, Object args) {
-            Layouts.NO_METHOD_ERROR.setArgs(error, args);
+        protected Object setArgs(RubyNoMethodError error, Object args) {
+            assert args == Nil.INSTANCE || args instanceof RubyArray;
+            error.args = args;
             return args;
         }
 

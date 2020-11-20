@@ -9,19 +9,19 @@
  */
 package org.truffleruby.core.array;
 
-import com.oracle.truffle.api.dsl.Cached;
-import com.oracle.truffle.api.dsl.ImportStatic;
-import com.oracle.truffle.api.dsl.ReportPolymorphism;
-import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.library.CachedLibrary;
-import com.oracle.truffle.api.object.DynamicObject;
-import com.oracle.truffle.api.profiles.ConditionProfile;
+import com.oracle.truffle.api.profiles.LoopConditionProfile;
 import org.truffleruby.core.array.library.ArrayStoreLibrary;
 import org.truffleruby.language.RubyBaseNode;
 import org.truffleruby.language.objects.shared.IsSharedNode;
 import org.truffleruby.language.objects.shared.WriteBarrierNode;
 
-import static org.truffleruby.Layouts.ARRAY;
+import com.oracle.truffle.api.dsl.Cached;
+import com.oracle.truffle.api.dsl.ImportStatic;
+import com.oracle.truffle.api.dsl.ReportPolymorphism;
+import com.oracle.truffle.api.dsl.Specialization;
+import com.oracle.truffle.api.library.CachedLibrary;
+import com.oracle.truffle.api.profiles.ConditionProfile;
+
 
 /** Copies a portion of an array to another array, whose store is known to have sufficient capacity, and to be
  * compatible with the source array's store.
@@ -39,31 +39,33 @@ public abstract class ArrayCopyCompatibleRangeNode extends RubyBaseNode {
         return ArrayCopyCompatibleRangeNodeGen.create();
     }
 
-    public abstract void execute(DynamicObject dst, DynamicObject src, int dstStart, int srcStart, int length);
+    public abstract void execute(RubyArray dst, RubyArray src, int dstStart, int srcStart, int length);
 
-    protected boolean noopGuard(DynamicObject dst, DynamicObject src, int dstStart, int srcStart, int length) {
+    protected boolean noopGuard(RubyArray dst, RubyArray src, int dstStart, int srcStart, int length) {
         return length == 0 || dst == src && dstStart == srcStart;
     }
 
     @Specialization(guards = "noopGuard(dst, src, dstStart, srcStart, length)")
-    protected void noop(DynamicObject dst, DynamicObject src, int dstStart, int srcStart, int length) {
+    protected void noop(RubyArray dst, RubyArray src, int dstStart, int srcStart, int length) {
     }
 
     @Specialization(guards = "!noopGuard(dst, src, dstStart, srcStart, length)", limit = "storageStrategyLimit()")
-    protected void copy(DynamicObject dst, DynamicObject src, int dstStart, int srcStart, int length,
-            @CachedLibrary("getStore(src)") ArrayStoreLibrary stores,
+    protected void copy(RubyArray dst, RubyArray src, int dstStart, int srcStart, int length,
+            @CachedLibrary("src.store") ArrayStoreLibrary stores,
             @Cached IsSharedNode isDstShared,
             @Cached IsSharedNode isSrcShared,
             @Cached WriteBarrierNode writeBarrierNode,
-            @Cached ConditionProfile share) {
+            @Cached ConditionProfile share,
+            @Cached("createCountingProfile()") LoopConditionProfile loopProfile) {
 
-        final Object srcStore = ARRAY.getStore(src);
-        stores.copyContents(srcStore, srcStart, ARRAY.getStore(dst), dstStart, length);
+        final Object srcStore = src.store;
+        stores.copyContents(srcStore, srcStart, dst.store, dstStart, length);
 
         if (share.profile(!stores.isPrimitive(srcStore) &&
                 isDstShared.executeIsShared(dst) &&
                 !isSrcShared.executeIsShared(src))) {
-            for (int i = 0; i < length; ++i) {
+            loopProfile.profileCounted(length);
+            for (int i = 0; loopProfile.inject(i < length); ++i) {
                 writeBarrierNode.executeWriteBarrier(stores.read(srcStore, i));
             }
         }

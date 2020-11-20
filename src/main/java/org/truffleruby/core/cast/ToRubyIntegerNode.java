@@ -9,14 +9,14 @@
  */
 package org.truffleruby.core.cast;
 
+import org.truffleruby.core.numeric.RubyBignum;
 import org.truffleruby.language.RubyContextSourceNode;
 import org.truffleruby.language.RubyNode;
-import org.truffleruby.language.dispatch.CallDispatchHeadNode;
+import org.truffleruby.language.dispatch.DispatchNode;
 
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.NodeChild;
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.object.DynamicObject;
 
 /** See {@link ToIntNode} for a comparison of different integer conversion nodes. */
 @NodeChild(value = "child", type = RubyNode.class)
@@ -42,14 +42,14 @@ public abstract class ToRubyIntegerNode extends RubyContextSourceNode {
         return value;
     }
 
-    @Specialization(guards = "isRubyBignum(value)")
-    protected DynamicObject coerceRubyBignum(DynamicObject value) {
+    @Specialization
+    protected RubyBignum coerceRubyBignum(RubyBignum value) {
         return value;
     }
 
     @Specialization(guards = "!isRubyInteger(object)")
     protected Object coerceObject(Object object,
-            @Cached CallDispatchHeadNode toIntNode) {
+            @Cached DispatchNode toIntNode) {
         return toIntNode.call(getContext().getCoreLibrary().truffleTypeModule, "rb_to_int_fallback", object);
     }
 }

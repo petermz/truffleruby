@@ -19,43 +19,46 @@ import java.util.Map.Entry;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.locks.ReentrantLock;
 
-import org.truffleruby.Layouts;
 import org.truffleruby.RubyContext;
 import org.truffleruby.RubyLanguage;
 import org.truffleruby.collections.ConcurrentOperations;
+import org.truffleruby.core.basicobject.BasicObjectNodes.ObjectIDNode;
 import org.truffleruby.core.klass.ClassNodes;
+import org.truffleruby.core.klass.RubyClass;
 import org.truffleruby.core.method.MethodFilter;
+import org.truffleruby.core.string.RubyString;
+import org.truffleruby.core.string.StringUtils;
 import org.truffleruby.core.symbol.RubySymbol;
 import org.truffleruby.language.RubyConstant;
+import org.truffleruby.language.RubyDynamicObject;
 import org.truffleruby.language.RubyGuards;
-import org.truffleruby.language.library.RubyLibrary;
+import org.truffleruby.language.constants.GetConstantNode;
 import org.truffleruby.language.control.RaiseException;
+import org.truffleruby.language.library.RubyLibrary;
+import org.truffleruby.language.loader.ReentrantLockFreeingMap;
 import org.truffleruby.language.methods.InternalMethod;
 import org.truffleruby.language.objects.ObjectGraph;
 import org.truffleruby.language.objects.ObjectGraphNode;
-import org.truffleruby.language.objects.ObjectIDOperations;
 import org.truffleruby.language.objects.shared.SharedObjects;
 
 import com.oracle.truffle.api.Assumption;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
-import com.oracle.truffle.api.Truffle;
 import com.oracle.truffle.api.nodes.Node;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.source.SourceSection;
 import com.oracle.truffle.api.utilities.CyclicAssumption;
 
 public class ModuleFields extends ModuleChain implements ObjectGraphNode {
 
-    public static void debugModuleChain(DynamicObject module) {
-        assert RubyGuards.isRubyModule(module);
-        ModuleChain chain = Layouts.MODULE.getFields(module);
+    public static void debugModuleChain(RubyModule module) {
+        ModuleChain chain = module.fields;
         final StringBuilder builder = new StringBuilder();
         while (chain != null) {
             builder.append(chain.getClass());
             if (!(chain instanceof PrependMarker)) {
-                DynamicObject real = chain.getActualModule();
-                builder.append(" " + Layouts.MODULE.getFields(real).getName());
+                RubyModule real = chain.getActualModule();
+                builder.append(" " + real.fields.getName());
             }
             builder.append(System.lineSeparator());
             chain = chain.getParentModule();
@@ -63,7 +66,7 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
         RubyLanguage.LOGGER.info(builder.toString());
     }
 
-    public DynamicObject rubyModuleObject;
+    public final RubyModule rubyModule;
 
     // The context is stored here - objects can obtain it via their class (which is a module)
     private final RubyContext context;
@@ -71,7 +74,7 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
 
     private final PrependMarker start;
 
-    private final DynamicObject lexicalParent;
+    private final RubyModule lexicalParent;
     public final String givenBaseName;
 
     private boolean hasFullName = false;
@@ -80,9 +83,9 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
     /** Whether this is a refinement module (R), created by #refine */
     private boolean isRefinement = false;
     /** The module or class (C) refined by this refinement module */
-    private DynamicObject refinedModule;
+    private RubyModule refinedModule;
     /** The namespace module (M) around the #refine call */
-    private DynamicObject refinementNamespace;
+    private RubyModule refinementNamespace;
 
     private final ConcurrentMap<String, InternalMethod> methods = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, RubyConstant> constants = new ConcurrentHashMap<>();
@@ -90,7 +93,7 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
 
     /** The refinements (calls to Module#refine) nested under/contained in this namespace module (M). Represented as a
      * map of refined classes and modules (C) to refinement modules (R). */
-    private final ConcurrentMap<DynamicObject, DynamicObject> refinements = new ConcurrentHashMap<>();
+    private final ConcurrentMap<RubyModule, RubyModule> refinements = new ConcurrentHashMap<>();
 
     private final CyclicAssumption methodsUnmodifiedAssumption;
     private final CyclicAssumption constantsUnmodifiedAssumption;
@@ -101,14 +104,15 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
     public ModuleFields(
             RubyContext context,
             SourceSection sourceSection,
-            DynamicObject lexicalParent,
-            String givenBaseName) {
+            RubyModule lexicalParent,
+            String givenBaseName,
+            RubyModule rubyModule) {
         super(null);
-        assert lexicalParent == null || RubyGuards.isRubyModule(lexicalParent);
         this.context = context;
         this.sourceSection = sourceSection;
         this.lexicalParent = lexicalParent;
         this.givenBaseName = givenBaseName;
+        this.rubyModule = rubyModule;
         this.methodsUnmodifiedAssumption = new CyclicAssumption("methods are unmodified");
         this.constantsUnmodifiedAssumption = new CyclicAssumption("constants are unmodified");
         start = new PrependMarker(this);
@@ -116,28 +120,26 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
 
     public RubyConstant getAdoptedByLexicalParent(
             RubyContext context,
-            DynamicObject lexicalParent,
+            RubyModule lexicalParent,
             String name,
             Node currentNode) {
-        assert RubyGuards.isRubyModule(lexicalParent);
-
-        RubyConstant previous = Layouts.MODULE.getFields(lexicalParent).setConstantInternal(
+        RubyConstant previous = lexicalParent.fields.setConstantInternal(
                 context,
                 currentNode,
                 name,
-                rubyModuleObject,
+                rubyModule,
                 false);
 
         if (!hasFullName()) {
             // Tricky, we need to compare with the Object class, but we only have a Class at hand.
-            final DynamicObject classClass = Layouts.BASIC_OBJECT.getLogicalClass(getLogicalClass());
-            final DynamicObject objectClass = ClassNodes.getSuperClass(ClassNodes.getSuperClass(classClass));
+            final RubyClass classClass = getLogicalClass().getLogicalClass();
+            final RubyClass objectClass = ClassNodes.getSuperClass(ClassNodes.getSuperClass(classClass));
 
             if (lexicalParent == objectClass) {
                 this.setFullName(name);
                 updateAnonymousChildrenModules(context);
-            } else if (Layouts.MODULE.getFields(lexicalParent).hasFullName()) {
-                this.setFullName(Layouts.MODULE.getFields(lexicalParent).getName() + "::" + name);
+            } else if (lexicalParent.fields.hasFullName()) {
+                this.setFullName(lexicalParent.fields.getName() + "::" + name);
                 updateAnonymousChildrenModules(context);
             }
             // else: Our lexicalParent is also an anonymous module
@@ -149,12 +151,12 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
     public void updateAnonymousChildrenModules(RubyContext context) {
         for (Map.Entry<String, RubyConstant> entry : constants.entrySet()) {
             RubyConstant constant = entry.getValue();
-            if (constant.hasValue() && RubyGuards.isRubyModule(constant.getValue())) {
-                DynamicObject module = (DynamicObject) constant.getValue();
-                if (!Layouts.MODULE.getFields(module).hasFullName()) {
-                    Layouts.MODULE.getFields(module).getAdoptedByLexicalParent(
+            if (constant.hasValue() && constant.getValue() instanceof RubyModule) {
+                RubyModule module = (RubyModule) constant.getValue();
+                if (!module.fields.hasFullName()) {
+                    module.fields.getAdoptedByLexicalParent(
                             context,
-                            rubyModuleObject,
+                            rubyModule,
                             entry.getKey(),
                             null);
                 }
@@ -171,14 +173,12 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
     }
 
     @TruffleBoundary
-    public void initCopy(DynamicObject from) {
-        assert RubyGuards.isRubyModule(from);
-
+    public void initCopy(RubyModule from) {
         // Do not copy name, the copy is an anonymous module
-        final ModuleFields fromFields = Layouts.MODULE.getFields(from);
+        final ModuleFields fromFields = from.fields;
 
         for (InternalMethod method : fromFields.methods.values()) {
-            this.methods.put(method.getName(), method.withDeclaringModule(rubyModuleObject));
+            this.methods.put(method.getName(), method.withDeclaringModule(rubyModule));
         }
 
         for (Entry<String, RubyConstant> entry : fromFields.constants.entrySet()) {
@@ -194,43 +194,60 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
             this.parentModule = fromFields.parentModule;
         }
 
-        if (Layouts.CLASS.isClass(rubyModuleObject)) {
+        if (rubyModule instanceof RubyClass) {
             // Singleton classes cannot be instantiated
-            if (!Layouts.CLASS.getIsSingleton(from)) {
-                ClassNodes.setInstanceFactory(rubyModuleObject, from);
+            if (!((RubyClass) from).isSingleton) {
+                ClassNodes.setInstanceShape((RubyClass) rubyModule, (RubyClass) from);
             }
 
-            Layouts.CLASS.setSuperclass(rubyModuleObject, Layouts.CLASS.getSuperclass(from));
+            ((RubyClass) rubyModule).superclass = ((RubyClass) from).superclass;
         }
     }
 
-    // TODO (eregon, 12 May 2015): ideally all callers would be nodes and check themselves.
     public void checkFrozen(RubyContext context, Node currentNode) {
-        if (context.getCoreLibrary() != null && RubyLibrary.getUncached().isFrozen(rubyModuleObject)) {
-            throw new RaiseException(context, context.getCoreExceptions().frozenError(rubyModuleObject, currentNode));
+        if (context.getCoreLibrary() != null && RubyLibrary.getUncached().isFrozen(rubyModule)) {
+            String name;
+            if (rubyModule instanceof RubyClass) {
+                final RubyClass cls = (RubyClass) rubyModule;
+                name = "object";
+                if (cls.isSingleton) {
+                    if (cls.attached instanceof RubyClass) {
+                        name = "Class";
+                    } else if (cls.attached instanceof RubyModule) {
+                        name = "Module";
+                    }
+                } else {
+                    name = "class";
+                }
+            } else {
+                name = "module";
+            }
+            throw new RaiseException(
+                    context,
+                    context.getCoreExceptions().frozenError(
+                            StringUtils.format("can't modify frozen %s", name),
+                            currentNode));
         }
     }
 
     @TruffleBoundary
-    public void include(RubyContext context, Node currentNode, DynamicObject module) {
-        assert RubyGuards.isRubyModule(module);
-
+    public void include(RubyContext context, Node currentNode, RubyModule module) {
         checkFrozen(context, currentNode);
 
         // If the module we want to include already includes us, it is cyclic
-        if (ModuleOperations.includesModule(module, rubyModuleObject)) {
+        if (ModuleOperations.includesModule(module, rubyModule)) {
             throw new RaiseException(
                     context,
                     context.getCoreExceptions().argumentError("cyclic include detected", currentNode));
         }
 
-        SharedObjects.propagate(context, rubyModuleObject, module);
+        SharedObjects.propagate(context, rubyModule, module);
 
         // We need to include the module ancestors in reverse order for a given inclusionPoint
         ModuleChain inclusionPoint = this;
-        Deque<DynamicObject> modulesToInclude = new ArrayDeque<>();
-        for (DynamicObject ancestor : Layouts.MODULE.getFields(module).ancestors()) {
-            if (ModuleOperations.includesModule(rubyModuleObject, ancestor)) {
+        Deque<RubyModule> modulesToInclude = new ArrayDeque<>();
+        for (RubyModule ancestor : module.fields.ancestors()) {
+            if (ModuleOperations.includesModule(rubyModule, ancestor)) {
                 if (isIncludedModuleBeforeSuperClass(ancestor)) {
                     // Include the modules at the appropriate inclusionPoint
                     performIncludes(inclusionPoint, modulesToInclude);
@@ -254,16 +271,14 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
         newHierarchyVersion();
     }
 
-    public void performIncludes(ModuleChain inclusionPoint, Deque<DynamicObject> moduleAncestors) {
+    public void performIncludes(ModuleChain inclusionPoint, Deque<RubyModule> moduleAncestors) {
         while (!moduleAncestors.isEmpty()) {
-            DynamicObject mod = moduleAncestors.pop();
-            assert RubyGuards.isRubyModule(mod);
+            RubyModule mod = moduleAncestors.pop();
             inclusionPoint.insertAfter(mod);
         }
     }
 
-    public boolean isIncludedModuleBeforeSuperClass(DynamicObject module) {
-        assert RubyGuards.isRubyModule(module);
+    public boolean isIncludedModuleBeforeSuperClass(RubyModule module) {
         ModuleChain included = parentModule;
         while (included instanceof IncludedModule) {
             if (included.getActualModule() == module) {
@@ -275,27 +290,25 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
     }
 
     @TruffleBoundary
-    public void prepend(RubyContext context, Node currentNode, DynamicObject module) {
-        assert RubyGuards.isRubyModule(module);
-
+    public void prepend(RubyContext context, Node currentNode, RubyModule module) {
         checkFrozen(context, currentNode);
 
         // If the module we want to prepend already includes us, it is cyclic
-        if (ModuleOperations.includesModule(module, rubyModuleObject)) {
+        if (ModuleOperations.includesModule(module, rubyModule)) {
             throw new RaiseException(
                     context,
                     context.getCoreExceptions().argumentError("cyclic prepend detected", currentNode));
         }
 
-        SharedObjects.propagate(context, rubyModuleObject, module);
+        SharedObjects.propagate(context, rubyModule, module);
 
-        ModuleChain mod = Layouts.MODULE.getFields(module).start;
+        ModuleChain mod = module.fields.start;
         final ModuleChain topPrependedModule = start.getParentModule();
         ModuleChain cur = start;
         while (mod != null &&
-                !(mod instanceof ModuleFields && RubyGuards.isRubyClass(((ModuleFields) mod).rubyModuleObject))) {
+                !(mod instanceof ModuleFields && ((ModuleFields) mod).rubyModule instanceof RubyClass)) {
             if (!(mod instanceof PrependMarker)) {
-                if (!ModuleOperations.includesModule(rubyModuleObject, mod.getActualModule())) {
+                if (!ModuleOperations.includesModule(rubyModule, mod.getActualModule())) {
                     cur.insertAfter(mod.getActualModule());
                     cur = cur.getParentModule();
                 }
@@ -305,7 +318,7 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
 
         // If there were already prepended modules, invalidate the first of them
         if (topPrependedModule != this) {
-            Layouts.MODULE.getFields(topPrependedModule.getActualModule()).newHierarchyVersion();
+            topPrependedModule.getActualModule().fields.newHierarchyVersion();
         } else {
             this.newHierarchyVersion();
         }
@@ -316,10 +329,10 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
     /** Set the value of a constant, possibly redefining it. */
     @TruffleBoundary
     public RubyConstant setConstant(RubyContext context, Node currentNode, String name, Object value) {
-        if (RubyGuards.isRubyModule(value)) {
-            return Layouts.MODULE.getFields((DynamicObject) value).getAdoptedByLexicalParent(
+        if (value instanceof RubyModule) {
+            return ((RubyModule) value).fields.getAdoptedByLexicalParent(
                     context,
-                    rubyModuleObject,
+                    rubyModule,
                     name,
                     currentNode);
         } else {
@@ -328,9 +341,12 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
     }
 
     @TruffleBoundary
-    public void setAutoloadConstant(RubyContext context, Node currentNode, String name, DynamicObject filename) {
-        assert RubyGuards.isRubyString(filename);
+    public void setAutoloadConstant(RubyContext context, Node currentNode, String name, RubyString filename) {
         RubyConstant autoloadConstant = setConstantInternal(context, currentNode, name, filename, true);
+        if (autoloadConstant == null) {
+            return;
+        }
+
         if (context.getOptions().LOG_AUTOLOAD) {
             RubyLanguage.LOGGER.info(() -> String.format(
                     "%s: setting up autoload %s with %s",
@@ -338,6 +354,14 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
                     autoloadConstant,
                     filename));
         }
+        final ReentrantLockFreeingMap<String> fileLocks = getContext().getFeatureLoader().getFileLocks();
+        final ReentrantLock lock = fileLocks.get(filename.getJavaString());
+        if (lock.isLocked()) {
+            // We need to handle the new autoload constant immediately
+            // if Object.autoload(name, filename) is executed from filename.rb
+            GetConstantNode.autoloadConstantStart(autoloadConstant);
+        }
+
         context.getFeatureLoader().addAutoload(autoloadConstant);
     }
 
@@ -345,12 +369,24 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
             boolean autoload) {
         checkFrozen(context, currentNode);
 
-        SharedObjects.propagate(context, rubyModuleObject, value);
+        SharedObjects.propagate(context, rubyModule, value);
 
+        final String autoloadPath = autoload ? ((RubyString) value).getJavaString() : null;
         RubyConstant previous;
         RubyConstant newConstant;
         do {
             previous = constants.get(name);
+            if (autoload && previous != null) {
+                if (previous.hasValue()) {
+                    // abort, do not set an autoload constant, the constant already has a value
+                    return null;
+                } else if (previous.isAutoload() &&
+                        previous.getAutoloadConstant().getAutoloadPath().equals(autoloadPath)) {
+                    // already an autoload constant with the same path,
+                    // do nothing so we don't replace the AutoloadConstant#autoloadLock which might be already acquired
+                    return null;
+                }
+            }
             newConstant = newConstant(currentNode, name, value, autoload, previous);
         } while (!ConcurrentOperations.replace(constants, name, previous, newConstant));
 
@@ -363,7 +399,7 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
         final boolean isPrivate = previous != null && previous.isPrivate();
         final boolean isDeprecated = previous != null && previous.isDeprecated();
         final SourceSection sourceSection = currentNode != null ? currentNode.getSourceSection() : null;
-        return new RubyConstant(rubyModuleObject, name, value, isPrivate, autoload, isDeprecated, sourceSection);
+        return new RubyConstant(rubyModule, name, value, isPrivate, autoload, isDeprecated, sourceSection);
     }
 
     @TruffleBoundary
@@ -376,7 +412,7 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
 
     @TruffleBoundary
     public void addMethod(RubyContext context, Node currentNode, InternalMethod method) {
-        assert ModuleOperations.canBindMethodTo(method, rubyModuleObject) ||
+        assert ModuleOperations.canBindMethodTo(method, rubyModule) ||
                 ModuleOperations.assignableTo(context.getCoreLibrary().objectClass, method.getDeclaringModule()) ||
                 // TODO (pitr-ch 24-Jul-2016): find out why undefined methods sometimes do not match above assertion
                 // e.g. "block in _routes route_set.rb:525" in rails/actionpack/lib/action_dispatch/routing/
@@ -384,15 +420,15 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
 
         checkFrozen(context, currentNode);
 
-        if (SharedObjects.isShared(context, rubyModuleObject)) {
+        if (SharedObjects.isShared(rubyModule)) {
             Set<Object> adjacent = ObjectGraph.newObjectSet();
-            method.getAdjacentObjects(adjacent);
+            ObjectGraph.addProperty(adjacent, method);
             for (Object object : adjacent) {
                 SharedObjects.writeBarrier(context, object);
             }
         }
 
-        method.getSharedMethodInfo().setDefinitionModuleIfUnset(rubyModuleObject);
+        method.getSharedMethodInfo().setDefinitionModuleIfUnset(rubyModule);
 
         methods.put(method.getName(), method);
 
@@ -401,22 +437,17 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
             // invalidate assumptions to not use an AST-inlined methods
             changedMethod(method.getName());
             if (refinedModule != null) {
-                Layouts.MODULE.getFields(refinedModule).changedMethod(method.getName());
+                refinedModule.fields.changedMethod(method.getName());
             }
         }
 
         if (context.getCoreLibrary().isLoaded() && !method.isUndefined()) {
-            if (RubyGuards.isSingletonClass(rubyModuleObject)) {
-                DynamicObject receiver = Layouts.CLASS.getAttached(rubyModuleObject);
-                context.send(
-                        receiver,
-                        "singleton_method_added",
-                        context.getSymbol(method.getName()));
+            final RubySymbol methodSymbol = context.getSymbol(method.getName());
+            if (RubyGuards.isSingletonClass(rubyModule)) {
+                RubyDynamicObject receiver = ((RubyClass) rubyModule).attached;
+                context.send(currentNode, receiver, "singleton_method_added", methodSymbol);
             } else {
-                context.send(
-                        rubyModuleObject,
-                        "method_added",
-                        context.getSymbol(method.getName()));
+                context.send(currentNode, rubyModule, "method_added", methodSymbol);
             }
         }
     }
@@ -437,13 +468,15 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
 
     @TruffleBoundary
     public void undefMethod(RubyContext context, Node currentNode, String methodName) {
-        final InternalMethod method = ModuleOperations.lookupMethodUncached(rubyModuleObject, methodName, null);
+        checkFrozen(context, currentNode);
+
+        final InternalMethod method = ModuleOperations.lookupMethodUncached(rubyModule, methodName, null);
         if (method == null || method.isUndefined()) {
-            final DynamicObject moduleForError;
-            if (RubyGuards.isMetaClass(rubyModuleObject)) {
-                moduleForError = Layouts.CLASS.getAttached(rubyModuleObject);
+            final RubyModule moduleForError;
+            if (RubyGuards.isMetaClass(rubyModule)) {
+                moduleForError = (RubyModule) ((RubyClass) rubyModule).attached;
             } else {
-                moduleForError = rubyModuleObject;
+                moduleForError = rubyModule;
             }
 
             throw new RaiseException(context, context.getCoreExceptions().nameErrorUndefinedMethod(
@@ -452,19 +485,27 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
                     currentNode));
         } else {
             addMethod(context, currentNode, method.undefined());
+
+            final RubySymbol methodSymbol = context.getSymbol(methodName);
+            if (RubyGuards.isSingletonClass(rubyModule)) {
+                final RubyDynamicObject receiver = ((RubyClass) rubyModule).attached;
+                context.send(currentNode, receiver, "singleton_method_undefined", methodSymbol);
+            } else {
+                context.send(currentNode, rubyModule, "method_undefined", methodSymbol);
+            }
         }
     }
 
     /** Also searches on Object for modules. Used for alias_method, visibility changes, etc. */
     @TruffleBoundary
     public InternalMethod deepMethodSearch(RubyContext context, String name) {
-        InternalMethod method = ModuleOperations.lookupMethodUncached(rubyModuleObject, name, null);
+        InternalMethod method = ModuleOperations.lookupMethodUncached(rubyModule, name, null);
         if (method != null && !method.isUndefined()) {
             return method;
         }
 
         // Also search on Object if we are a Module. JRuby calls it deepMethodSearch().
-        if (!RubyGuards.isRubyClass(rubyModuleObject)) { // TODO: handle undefined methods
+        if (!(rubyModule instanceof RubyClass)) { // TODO: handle undefined methods
             method = ModuleOperations.lookupMethodUncached(context.getCoreLibrary().objectClass, name, null);
 
             if (method != null && !method.isUndefined()) {
@@ -473,7 +514,7 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
         }
 
         if (isRefinement()) {
-            return Layouts.MODULE.getFields(getRefinedModule()).deepMethodSearch(context, name);
+            return getRefinedModule().fields.deepMethodSearch(context, name);
         } else {
             return null;
         }
@@ -493,7 +534,7 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
                 throw new RaiseException(
                         context,
                         context.getCoreExceptions().nameErrorUninitializedConstant(
-                                rubyModuleObject,
+                                rubyModule,
                                 name,
                                 currentNode));
             }
@@ -514,7 +555,7 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
                 throw new RaiseException(
                         context,
                         context.getCoreExceptions().nameErrorUninitializedConstant(
-                                rubyModuleObject,
+                                rubyModule,
                                 name,
                                 currentNode));
             }
@@ -576,12 +617,12 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
     @TruffleBoundary
     private String createAnonymousName() {
         if (givenBaseName != null) {
-            return Layouts.MODULE.getFields(lexicalParent).getName() + "::" + givenBaseName;
-        } else if (getLogicalClass() == rubyModuleObject) { // For the case of class Class during initialization
+            return lexicalParent.fields.getName() + "::" + givenBaseName;
+        } else if (getLogicalClass() == rubyModule) { // For the case of class Class during initialization
             return "#<cyclic>";
         } else {
-            return "#<" + Layouts.MODULE.getFields(getLogicalClass()).getName() + ":0x" +
-                    Long.toHexString(ObjectIDOperations.verySlowGetObjectID(context, rubyModuleObject)) + ">";
+            return "#<" + getLogicalClass().fields.getName() + ":0x" +
+                    Long.toHexString(ObjectIDNode.uncachedObjectID(context, rubyModule)) + ">";
         }
     }
 
@@ -597,18 +638,18 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
         return isRefinement;
     }
 
-    public void setupRefinementModule(DynamicObject refinedModule, DynamicObject refinementNamespace) {
+    public void setupRefinementModule(RubyModule refinedModule, RubyModule refinementNamespace) {
         this.isRefinement = true;
         this.refinedModule = refinedModule;
         this.refinementNamespace = refinementNamespace;
-        this.parentModule = Layouts.MODULE.getFields(refinedModule).start;
+        this.parentModule = refinedModule.fields.start;
     }
 
-    public DynamicObject getRefinedModule() {
+    public RubyModule getRefinedModule() {
         return refinedModule;
     }
 
-    public DynamicObject getRefinementNamespace() {
+    public RubyModule getRefinementNamespace() {
         return refinementNamespace;
     }
 
@@ -626,7 +667,7 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
         newMethodsVersion();
 
         if (isRefinement()) {
-            Layouts.MODULE.getFields(getRefinedModule()).invalidateBuiltinsAssumptions();
+            getRefinedModule().fields.invalidateBuiltinsAssumptions();
         }
     }
 
@@ -669,42 +710,35 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
         return classVariables;
     }
 
-    public ConcurrentMap<DynamicObject, DynamicObject> getRefinements() {
+    public ConcurrentMap<RubyModule, RubyModule> getRefinements() {
         return refinements;
     }
 
-    public void setSuperClass(DynamicObject superclass, boolean markAsInitialized) {
-        assert RubyGuards.isRubyClass(rubyModuleObject);
-        assert RubyGuards.isRubyClass(superclass);
-
-        this.parentModule = Layouts.MODULE.getFields(superclass).start;
-
-        if (markAsInitialized) {
-            Layouts.CLASS.setSuperclass(rubyModuleObject, superclass);
-        }
-
+    public void setSuperClass(RubyClass superclass) {
+        assert rubyModule instanceof RubyClass;
+        this.parentModule = superclass.fields.start;
         newHierarchyVersion();
     }
 
     @Override
-    public DynamicObject getActualModule() {
-        return rubyModuleObject;
+    public RubyModule getActualModule() {
+        return rubyModule;
     }
 
     /** Iterate over all ancestors, skipping PrependMarker and resolving IncludedModule. */
-    public Iterable<DynamicObject> ancestors() {
+    public Iterable<RubyModule> ancestors() {
         return () -> new AncestorIterator(start);
     }
 
     /** Iterates over prepend'ed and include'd modules. */
-    public Iterable<DynamicObject> prependedAndIncludedModules() {
+    public Iterable<RubyModule> prependedAndIncludedModules() {
         return () -> new IncludedModulesIterator(start, this);
     }
 
     public Collection<RubySymbol> filterMethods(RubyContext context, boolean includeAncestors, MethodFilter filter) {
         final Map<String, InternalMethod> allMethods;
         if (includeAncestors) {
-            allMethods = ModuleOperations.getAllMethods(rubyModuleObject);
+            allMethods = ModuleOperations.getAllMethods(rubyModule);
         } else {
             allMethods = methods;
         }
@@ -717,9 +751,9 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
             MethodFilter filter) {
         final Map<String, InternalMethod> allMethods;
         if (includeAncestors) {
-            allMethods = ModuleOperations.getAllMethods(rubyModuleObject);
+            allMethods = ModuleOperations.getAllMethods(rubyModule);
         } else {
-            allMethods = ModuleOperations.getMethodsUntilLogicalClass(rubyModuleObject);
+            allMethods = ModuleOperations.getMethodsUntilLogicalClass(rubyModule);
         }
         return filterMethods(context, allMethods, filter);
     }
@@ -730,7 +764,7 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
             MethodFilter filter) {
         final Map<String, InternalMethod> allMethods;
         if (includeAncestors) {
-            allMethods = ModuleOperations.getMethodsBeforeLogicalClass(rubyModuleObject);
+            allMethods = ModuleOperations.getMethodsBeforeLogicalClass(rubyModule);
         } else {
             allMethods = methods;
         }
@@ -753,8 +787,8 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
         return filtered;
     }
 
-    public DynamicObject getLogicalClass() {
-        return Layouts.BASIC_OBJECT.getLogicalClass(rubyModuleObject);
+    public RubyClass getLogicalClass() {
+        return rubyModule.getLogicalClass();
     }
 
     @Override
@@ -763,29 +797,25 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
             adjacent.add(lexicalParent);
         }
 
-        for (DynamicObject module : prependedAndIncludedModules()) {
-            adjacent.add(module);
+        for (RubyModule module : prependedAndIncludedModules()) {
+            ObjectGraph.addProperty(adjacent, module);
         }
 
-        if (Layouts.CLASS.isClass(rubyModuleObject)) {
-            DynamicObject superClass = ClassNodes.getSuperClass(rubyModuleObject);
-            if (superClass != null) {
-                adjacent.add(superClass);
-            }
+        if (rubyModule instanceof RubyClass) {
+            RubyClass superClass = ClassNodes.getSuperClass((RubyClass) rubyModule);
+            ObjectGraph.addProperty(adjacent, superClass);
         }
 
         for (RubyConstant constant : constants.values()) {
-            constant.getAdjacentObjects(adjacent);
+            ObjectGraph.addProperty(adjacent, constant);
         }
 
         for (Object value : classVariables.values()) {
-            if (ObjectGraph.isSymbolOrDynamicObject(value)) {
-                adjacent.add(value);
-            }
+            ObjectGraph.addProperty(adjacent, value);
         }
 
         for (InternalMethod method : methods.values()) {
-            method.getAdjacentObjects(adjacent);
+            ObjectGraph.addProperty(adjacent, method);
         }
     }
 
@@ -796,12 +826,10 @@ public class ModuleFields extends ModuleChain implements ObjectGraphNode {
     /** Registers an Assumption for a given method name, which is invalidated when a method with same name is defined or
      * undefined in this class or when a module is prepended to this class. This does not check re-definitions in
      * subclasses. */
-    public Assumption registerAssumption(String methodName) {
+    public void registerAssumption(String methodName, Assumption assumption) {
         assert context.getCoreLibrary().isInitializing();
-        Assumption assumption = Truffle.getRuntime().createAssumption("inlined " + getName() + "#" + methodName);
         Assumption old = inlinedBuiltinsAssumptions.put(methodName, assumption);
         assert old == null;
-        return assumption;
     }
 
     private void changedMethod(String name) {

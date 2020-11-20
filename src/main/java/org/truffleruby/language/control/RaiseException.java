@@ -9,18 +9,19 @@
  */
 package org.truffleruby.language.control;
 
-import org.truffleruby.Layouts;
+import com.oracle.truffle.api.CompilerDirectives;
+import com.oracle.truffle.api.object.DynamicObjectLibrary;
 import org.truffleruby.RubyContext;
 import org.truffleruby.RubyLanguage;
 import org.truffleruby.core.exception.ExceptionOperations;
+import org.truffleruby.core.exception.RubyException;
+import org.truffleruby.core.klass.RubyClass;
 import org.truffleruby.core.module.ModuleFields;
 import org.truffleruby.language.backtrace.Backtrace;
-import org.truffleruby.language.objects.ReadObjectFieldNodeGen;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.TruffleException;
 import com.oracle.truffle.api.nodes.Node;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.source.SourceSection;
 
 /** A ControlFlowException holding a Ruby exception. */
@@ -28,18 +29,18 @@ public class RaiseException extends RuntimeException implements TruffleException
 
     private static final long serialVersionUID = -4128190563044417424L;
 
-    private final DynamicObject exception;
+    private final RubyException exception;
     private final boolean internal;
 
-    public RaiseException(RubyContext context, DynamicObject exception) {
+    public RaiseException(RubyContext context, RubyException exception) {
         this(context, exception, false);
     }
 
-    public RaiseException(RubyContext context, DynamicObject exception, boolean internal) {
+    public RaiseException(RubyContext context, RubyException exception, boolean internal) {
         this.exception = exception;
         this.internal = internal;
 
-        final Backtrace backtrace = Layouts.EXCEPTION.getBacktrace(exception);
+        final Backtrace backtrace = exception.backtrace;
         if (backtrace != null) { // The backtrace could be null if for example a user backtrace was passed to Kernel#raise
             backtrace.setRaiseException(this);
         }
@@ -51,7 +52,7 @@ public class RaiseException extends RuntimeException implements TruffleException
         }
     }
 
-    public DynamicObject getException() {
+    public RubyException getException() {
         return exception;
     }
 
@@ -64,14 +65,14 @@ public class RaiseException extends RuntimeException implements TruffleException
     @Override
     @TruffleBoundary
     public String getMessage() {
-        final ModuleFields exceptionClass = Layouts.MODULE.getFields(Layouts.BASIC_OBJECT.getLogicalClass(exception));
+        final ModuleFields exceptionClass = exception.getLogicalClass().fields;
         final String message = ExceptionOperations.messageToString(exceptionClass.getContext(), exception);
         return String.format("%s (%s)", message, exceptionClass.getName());
     }
 
     @Override
     public Node getLocation() {
-        final Backtrace backtrace = Layouts.EXCEPTION.getBacktrace(exception);
+        final Backtrace backtrace = exception.backtrace;
 
         if (backtrace == null) {
             // The backtrace could be null if for example a user backtrace was passed to Kernel#raise
@@ -94,8 +95,8 @@ public class RaiseException extends RuntimeException implements TruffleException
 
     @Override
     public SourceSection getSourceLocation() {
-        if (isSyntaxError() && Layouts.EXCEPTION.getBacktrace(exception) != null) {
-            return Layouts.EXCEPTION.getBacktrace(exception).getSourceLocation();
+        if (isSyntaxError() && exception.backtrace != null) {
+            return exception.backtrace.getSourceLocation();
         } else {
             return TruffleException.super.getSourceLocation();
         }
@@ -114,17 +115,19 @@ public class RaiseException extends RuntimeException implements TruffleException
 
     @Override
     public int getExitStatus() {
-        final Object status = ReadObjectFieldNodeGen.getUncached().execute(exception, "@status", 1);
+        final Object status = DynamicObjectLibrary.getUncached().getOrDefault(exception, "@status", 1);
 
         if (status instanceof Integer) {
             return (int) status;
+        } else {
+            CompilerDirectives.transferToInterpreterAndInvalidate();
+            throw CompilerDirectives.shouldNotReachHere(
+                    String.format("Ruby exit exception status is not an integer (%s)", status.getClass()));
         }
 
-        throw new UnsupportedOperationException(
-                String.format("Ruby exit exception status is not an integer (%s)", status.getClass()));
     }
 
-    private boolean isA(RubyContext context, DynamicObject rubyClass) {
+    private boolean isA(RubyContext context, RubyClass rubyClass) {
         return context.send(exception, "is_a?", rubyClass) == Boolean.TRUE;
     }
 

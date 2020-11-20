@@ -412,8 +412,12 @@ module Truffle::CExt
     ruby_class
   end
 
-  def rb_obj_respond_to(object, id, priv)
-    Primitive.object_respond_to?(object, id, priv != 0)
+  def rb_obj_respond_to(object, name, priv)
+    object.respond_to?(name, priv != 0)
+  end
+
+  def rb_respond_to(object, name)
+    object.respond_to?(name, false)
   end
 
   def rb_check_convert_type(obj, type_name, method)
@@ -622,25 +626,36 @@ module Truffle::CExt
 
   def events_to_events_array(events)
     events_ary = []
-    if events.anybits? 0x0001
-      events ^= 0x0001
-      events_ary << :line
-    end
-    if events.anybits? 0x0002
-      events ^= 0x0002
-      events_ary << :class
+    parse_event = -> bits, name do
+      if events.anybits? bits
+        events ^= bits
+        if Symbol === name
+          events_ary << name
+        else
+          warn "warning: rb_tracepoint_new(#{name}) is not yet implemented" if $VERBOSE
+          events_ary << :never
+        end
+      end
     end
 
-    if events.anybits? 0x100000
-      events ^= 0x100000
-      warn 'warning: rb_tracepoint_new(RUBY_INTERNAL_EVENT_NEWOBJ) is not yet implemented' if $VERBOSE
-      events_ary << :never
-    end
-    if events.anybits? 0x200000
-      events ^= 0x200000
-      warn 'warning: rb_tracepoint_new(RUBY_INTERNAL_EVENT_FREEOBJ) is not yet implemented' if $VERBOSE
-      events_ary << :never
-    end
+    parse_event[0x0001, :line]
+    parse_event[0x0002, :class]
+    parse_event[0x0004, :end]
+    parse_event[0x0008, :call]
+    parse_event[0x0010, :return]
+    parse_event[0x0020, :c_call]
+    parse_event[0x0040, :c_return]
+    parse_event[0x0080, :raise]
+
+    parse_event[0x0100, :b_call]
+    parse_event[0x0200, :b_return]
+    parse_event[0x0400, :thread_begin]
+    parse_event[0x0800, :thread_end]
+    parse_event[0x1000, :fiber_switch]
+    parse_event[0x2000, :script_compiled]
+
+    parse_event[0x100000, 'RUBY_INTERNAL_EVENT_NEWOBJ']
+    parse_event[0x200000, 'RUBY_INTERNAL_EVENT_FREEOBJ']
 
     raise ArgumentError, "unknown event #{'%#x' % events}" unless events == 0
     events_ary
@@ -829,10 +844,6 @@ module Truffle::CExt
 
   def rb_funcall_with_block(recv, meth, args, block)
     recv.public_send(meth, *args, &block)
-  end
-
-  def rb_respond_to(object, name)
-    object.respond_to?(name)
   end
 
   def rb_funcallv_public(recv, meth, args)
@@ -1070,6 +1081,10 @@ module Truffle::CExt
 
   def rb_raise(object, name)
     raise 'not implemented'
+  end
+
+  def rb_ivar_count(object)
+    object.instance_variables.size
   end
 
   def rb_ivar_get(object, name)
@@ -1493,7 +1508,7 @@ module Truffle::CExt
   def rb_exec_recursive(func, obj, arg)
     result = nil
 
-    recursive = Thread.detect_recursion(obj) do
+    recursive = Truffle::ThreadOperations.detect_recursion(obj) do
       result = Primitive.cext_unwrap(Primitive.call_with_c_mutex(func, [Primitive.cext_wrap(obj), Primitive.cext_wrap(arg), 0]))
     end
 
@@ -1591,16 +1606,9 @@ module Truffle::CExt
   end
 
   def rb_thread_call_without_gvl(function, data1, unblock, data2)
-    if unblock
-      unblocker = -> {
-        Truffle::Interop.execute_without_conversion(unblock, data2)
-      }
-    end
-
-    Primitive.call_without_c_mutex(
-        -> { Thread.current.unblock(
-            unblocker,
-            -> { function.call(data1) }) }, [])
+    Primitive.call_without_c_mutex(-> {
+      Primitive.call_with_unblocking_function(Thread.current, function, data1, unblock, data2)
+    }, [])
   end
 
   def rb_iterate(iteration, iterated_object, callback, callback_arg)
@@ -1692,8 +1700,7 @@ module Truffle::CExt
   end
 
   def rb_backref_get
-    Truffle::RegexpOperations.last_match(
-      Truffle::ThreadOperations.ruby_caller([Truffle::CExt, Truffle::Interop.singleton_class]))
+    Primitive.regexp_last_match_get(Truffle::ThreadOperations.ruby_caller_special_variables([Truffle::CExt, Truffle::Interop.singleton_class]))
   end
 
   def rb_gv_set(name, value)
@@ -1710,7 +1717,10 @@ module Truffle::CExt
   end
 
   def rb_reg_match(re, str)
-    re =~ str
+    result = str ? Truffle::RegexpOperations.match(re, str, 0) : nil
+    Primitive.regexp_last_match_set(Truffle::ThreadOperations.ruby_caller_special_variables([Truffle::CExt, Truffle::Interop.singleton_class]), result)
+
+    result.begin(0) if result
   end
 
   def rb_hash_aref(object, key)

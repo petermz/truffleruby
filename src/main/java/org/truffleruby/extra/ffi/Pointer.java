@@ -25,7 +25,8 @@ import sun.misc.Unsafe;
 public class Pointer implements AutoCloseable {
 
     public static final Pointer NULL = new Pointer(0);
-    public static final int SIZE = Long.BYTES;
+    public static final long SIZE = Long.BYTES;
+    public static final long UNBOUNDED = Long.MAX_VALUE;
 
     public static final Pointer[] EMPTY_ARRAY = new Pointer[0];
 
@@ -49,7 +50,7 @@ public class Pointer implements AutoCloseable {
     private FinalizerReference finalizerRef = null;
 
     public Pointer(long address) {
-        this(address, 0);
+        this(address, UNBOUNDED);
     }
 
     public Pointer(long address, long size) {
@@ -96,6 +97,7 @@ public class Pointer implements AutoCloseable {
         writeByte(offset + length, (byte) 0);
     }
 
+    @TruffleBoundary
     public void writeBytes(long offset, long size, byte value) {
         assert address + offset != 0 || size == 0;
         UNSAFE.setMemory(address + offset, size, value);

@@ -9,34 +9,35 @@
  */
 package org.truffleruby.core.array;
 
-import org.truffleruby.Layouts;
 import org.truffleruby.RubyContext;
+import org.truffleruby.RubyLanguage;
 import org.truffleruby.core.CoreLibrary;
 import org.truffleruby.core.array.library.ArrayStoreLibrary;
 import org.truffleruby.language.RubyContextSourceNode;
 import org.truffleruby.language.RubyNode;
-import org.truffleruby.language.objects.AllocateObjectNode;
+import org.truffleruby.language.objects.AllocateHelperNode;
 
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.nodes.ExplodeLoop;
-import com.oracle.truffle.api.object.DynamicObject;
 
 public abstract class ArrayLiteralNode extends RubyContextSourceNode {
 
-    public static ArrayLiteralNode create(RubyNode[] values) {
-        return new UninitialisedArrayLiteralNode(values);
+    public static ArrayLiteralNode create(RubyLanguage language, RubyNode[] values) {
+        return new UninitialisedArrayLiteralNode(language, values);
     }
 
     @Children protected final RubyNode[] values;
-    @Child private AllocateObjectNode allocateObjectNode;
+    @Child private AllocateHelperNode allocateHelperNode;
+    protected final RubyLanguage language;
 
-    public ArrayLiteralNode(RubyNode[] values) {
+    public ArrayLiteralNode(RubyLanguage language, RubyNode[] values) {
+        this.language = language;
         this.values = values;
     }
 
-    protected DynamicObject makeGeneric(VirtualFrame frame, Object[] alreadyExecuted) {
-        final ArrayLiteralNode newNode = new ObjectArrayLiteralNode(values);
+    protected RubyArray makeGeneric(VirtualFrame frame, Object[] alreadyExecuted) {
+        final ArrayLiteralNode newNode = new ObjectArrayLiteralNode(language, values);
         newNode.unsafeSetSourceSection(getSourceIndexLength());
         replace(newNode);
 
@@ -53,12 +54,14 @@ public abstract class ArrayLiteralNode extends RubyContextSourceNode {
         return cachedCreateArray(executedValues, executedValues.length);
     }
 
-    protected DynamicObject cachedCreateArray(Object store, int size) {
-        if (allocateObjectNode == null) {
+    protected RubyArray cachedCreateArray(Object store, int size) {
+        if (allocateHelperNode == null) {
             CompilerDirectives.transferToInterpreterAndInvalidate();
-            allocateObjectNode = insert(AllocateObjectNode.create());
+            allocateHelperNode = insert(AllocateHelperNode.create());
         }
-        return allocateObjectNode.allocate(coreLibrary().arrayClass, store, size);
+        final RubyArray array = new RubyArray(coreLibrary().arrayClass, RubyLanguage.arrayShape, store, size);
+        allocateHelperNode.trace(array, this, language);
+        return array;
     }
 
     @Override
@@ -97,8 +100,8 @@ public abstract class ArrayLiteralNode extends RubyContextSourceNode {
 
     private static class EmptyArrayLiteralNode extends ArrayLiteralNode {
 
-        public EmptyArrayLiteralNode(RubyNode[] values) {
-            super(values);
+        public EmptyArrayLiteralNode(RubyLanguage language, RubyNode[] values) {
+            super(language, values);
         }
 
         @Override
@@ -110,8 +113,8 @@ public abstract class ArrayLiteralNode extends RubyContextSourceNode {
 
     private static class FloatArrayLiteralNode extends ArrayLiteralNode {
 
-        public FloatArrayLiteralNode(RubyNode[] values) {
-            super(values);
+        public FloatArrayLiteralNode(RubyLanguage language, RubyNode[] values) {
+            super(language, values);
         }
 
         @ExplodeLoop
@@ -132,7 +135,7 @@ public abstract class ArrayLiteralNode extends RubyContextSourceNode {
             return cachedCreateArray(executedValues, values.length);
         }
 
-        private DynamicObject makeGeneric(VirtualFrame frame, final double[] executedValues, int n, Object value) {
+        private RubyArray makeGeneric(VirtualFrame frame, final double[] executedValues, int n, Object value) {
             final Object[] executedObjects = new Object[n + 1];
 
             for (int i = 0; i < n; i++) {
@@ -147,8 +150,8 @@ public abstract class ArrayLiteralNode extends RubyContextSourceNode {
 
     private static class IntegerArrayLiteralNode extends ArrayLiteralNode {
 
-        public IntegerArrayLiteralNode(RubyNode[] values) {
-            super(values);
+        public IntegerArrayLiteralNode(RubyLanguage language, RubyNode[] values) {
+            super(language, values);
         }
 
         @ExplodeLoop
@@ -169,7 +172,7 @@ public abstract class ArrayLiteralNode extends RubyContextSourceNode {
             return cachedCreateArray(executedValues, values.length);
         }
 
-        private DynamicObject makeGeneric(VirtualFrame frame, final int[] executedValues, int n, Object value) {
+        private RubyArray makeGeneric(VirtualFrame frame, final int[] executedValues, int n, Object value) {
             final Object[] executedObjects = new Object[n + 1];
 
             for (int i = 0; i < n; i++) {
@@ -184,8 +187,8 @@ public abstract class ArrayLiteralNode extends RubyContextSourceNode {
 
     private static class LongArrayLiteralNode extends ArrayLiteralNode {
 
-        public LongArrayLiteralNode(RubyNode[] values) {
-            super(values);
+        public LongArrayLiteralNode(RubyLanguage language, RubyNode[] values) {
+            super(language, values);
         }
 
         @ExplodeLoop
@@ -206,7 +209,7 @@ public abstract class ArrayLiteralNode extends RubyContextSourceNode {
             return cachedCreateArray(executedValues, values.length);
         }
 
-        private DynamicObject makeGeneric(VirtualFrame frame, final long[] executedValues, int n, Object value) {
+        private RubyArray makeGeneric(VirtualFrame frame, final long[] executedValues, int n, Object value) {
             final Object[] executedObjects = new Object[n + 1];
 
             for (int i = 0; i < n; i++) {
@@ -221,8 +224,8 @@ public abstract class ArrayLiteralNode extends RubyContextSourceNode {
 
     private static class ObjectArrayLiteralNode extends ArrayLiteralNode {
 
-        public ObjectArrayLiteralNode(RubyNode[] values) {
-            super(values);
+        public ObjectArrayLiteralNode(RubyLanguage language, RubyNode[] values) {
+            super(language, values);
         }
 
         @ExplodeLoop
@@ -241,8 +244,8 @@ public abstract class ArrayLiteralNode extends RubyContextSourceNode {
 
     private static class UninitialisedArrayLiteralNode extends ArrayLiteralNode {
 
-        public UninitialisedArrayLiteralNode(RubyNode[] values) {
-            super(values);
+        public UninitialisedArrayLiteralNode(RubyLanguage language, RubyNode[] values) {
+            super(language, values);
         }
 
         @Override
@@ -255,23 +258,23 @@ public abstract class ArrayLiteralNode extends RubyContextSourceNode {
                 executedValues[n] = values[n].execute(frame);
             }
 
-            final DynamicObject array = cachedCreateArray(
+            final RubyArray array = cachedCreateArray(
                     storeSpecialisedFromObjects(executedValues),
                     executedValues.length);
-            final Object store = Layouts.ARRAY.getStore(array);
+            final Object store = array.store;
 
             final RubyNode newNode;
 
             if (store == ArrayStoreLibrary.INITIAL_STORE) {
-                newNode = new EmptyArrayLiteralNode(values);
+                newNode = new EmptyArrayLiteralNode(language, values);
             } else if (store instanceof int[]) {
-                newNode = new IntegerArrayLiteralNode(values);
+                newNode = new IntegerArrayLiteralNode(language, values);
             } else if (store instanceof long[]) {
-                newNode = new LongArrayLiteralNode(values);
+                newNode = new LongArrayLiteralNode(language, values);
             } else if (store instanceof double[]) {
-                newNode = new FloatArrayLiteralNode(values);
+                newNode = new FloatArrayLiteralNode(language, values);
             } else {
-                newNode = new ObjectArrayLiteralNode(values);
+                newNode = new ObjectArrayLiteralNode(language, values);
             }
 
             newNode.unsafeSetSourceSection(getSourceIndexLength());

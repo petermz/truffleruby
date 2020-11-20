@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
+import org.truffleruby.core.proc.ProcType;
 import org.truffleruby.core.string.StringUtils;
 import org.truffleruby.parser.ArgumentDescriptor;
 import org.truffleruby.parser.ArgumentType;
@@ -27,12 +28,16 @@ public class Arity {
     private final int optional;
     private final boolean hasRest;
     private final int postRequired;
+    private final boolean allKeywordsOptional;
     private final boolean hasKeywordsRest;
     private final String[] keywordArguments;
+    /** During parsing we cannot know if this Arity object belongs to proc or to lambda. So we calculate the arity
+     * number for both cases and provide a ProcType-dependent interface. */
     private final int arityNumber;
+    private final int procArityNumber;
 
     public Arity(int preRequired, int optional, boolean hasRest) {
-        this(preRequired, optional, hasRest, 0, NO_KEYWORDS, false);
+        this(preRequired, optional, hasRest, 0, NO_KEYWORDS, true, false);
     }
 
 
@@ -42,20 +47,30 @@ public class Arity {
             boolean hasRest,
             int postRequired,
             String[] keywordArguments,
+            boolean allKeywordsOptional,
             boolean hasKeywordsRest) {
         this.preRequired = preRequired;
         this.optional = optional;
         this.hasRest = hasRest;
         this.postRequired = postRequired;
         this.keywordArguments = keywordArguments;
+        this.allKeywordsOptional = allKeywordsOptional;
         this.hasKeywordsRest = hasKeywordsRest;
-        this.arityNumber = computeArityNumber();
+        this.arityNumber = computeArityNumber(false);
+        this.procArityNumber = computeArityNumber(true);
 
         assert keywordArguments != null && preRequired >= 0 && optional >= 0 && postRequired >= 0 : toString();
     }
 
     public Arity withRest(boolean hasRest) {
-        return new Arity(preRequired, optional, hasRest, postRequired, keywordArguments, hasKeywordsRest);
+        return new Arity(
+                preRequired,
+                optional,
+                hasRest,
+                postRequired,
+                keywordArguments,
+                allKeywordsOptional,
+                hasKeywordsRest);
     }
 
     public Arity consumingFirstRequired() {
@@ -65,6 +80,7 @@ public class Arity {
                 hasRest,
                 postRequired,
                 keywordArguments,
+                allKeywordsOptional,
                 hasKeywordsRest);
     }
 
@@ -96,21 +112,25 @@ public class Arity {
         return hasKeywordsRest;
     }
 
-    private int computeArityNumber() {
+    private int computeArityNumber(boolean isProc) {
         int count = getRequired();
 
-        if (acceptsKeywords()) {
+        if (acceptsKeywords() && !allKeywordsOptional) {
             count++;
         }
 
-        if (optional > 0 || hasRest) {
+        if (hasRest || (!isProc && (optional > 0 || (acceptsKeywords() && allKeywordsOptional)))) {
             count = -count - 1;
         }
 
         return count;
     }
 
-    public int getArityNumber() {
+    public int getArityNumber(ProcType type) {
+        return type == ProcType.PROC ? procArityNumber : arityNumber;
+    }
+
+    public int getMethodArityNumber() {
         return arityNumber;
     }
 

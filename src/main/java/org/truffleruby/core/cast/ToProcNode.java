@@ -9,44 +9,62 @@
  */
 package org.truffleruby.core.cast;
 
-import org.truffleruby.Layouts;
+import org.truffleruby.core.module.RubyModule;
+import org.truffleruby.core.proc.RubyProc;
+import org.truffleruby.core.symbol.RubySymbol;
+import org.truffleruby.core.symbol.SymbolNodes;
+import org.truffleruby.language.Nil;
 import org.truffleruby.language.RubyContextSourceNode;
-import org.truffleruby.language.RubyGuards;
 import org.truffleruby.language.RubyNode;
+import org.truffleruby.language.arguments.RubyArguments;
 import org.truffleruby.language.control.RaiseException;
-import org.truffleruby.language.dispatch.CallDispatchHeadNode;
+import org.truffleruby.language.dispatch.DispatchNode;
 
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.NodeChild;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.frame.VirtualFrame;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.BranchProfile;
 
-/** Casts an object to a Ruby Proc object. */
+import java.util.Map;
+
+/** The `&` in `foo(&block)`. Converts the passed block to a RubyProc or nil. */
 @NodeChild(value = "child", type = RubyNode.class)
 public abstract class ToProcNode extends RubyContextSourceNode {
 
-    @Specialization(guards = "isNil(nil)")
-    protected Object doNil(Object nil) {
+    @Specialization
+    protected Nil doNil(Nil nil) {
         return nil;
     }
 
-    @Specialization(guards = "isRubyProc(proc)")
-    protected DynamicObject doRubyProc(DynamicObject proc) {
+    @Specialization
+    protected RubyProc doRubyProc(RubyProc proc) {
         return proc;
     }
 
-    @Specialization(guards = "!isRubyProc(object)")
-    protected DynamicObject doObject(VirtualFrame frame, Object object,
-            @Cached("createPrivate()") CallDispatchHeadNode toProc,
+    // AST-inlined version of Symbol#to_proc
+    // No need to guard the refinements here since refinements are always the same in a given source location
+    @Specialization(
+            guards = "symbol == cachedSymbol",
+            assumptions = "getContext().getLanguageSlow().coreMethodAssumptions.symbolToProcAssumption",
+            limit = "1")
+    protected Object doRubySymbolASTInlined(VirtualFrame frame, RubySymbol symbol,
+            @Cached("symbol") RubySymbol cachedSymbol,
+            @Cached("getProcForSymbol(getRefinements(frame), cachedSymbol)") RubyProc cachedProc) {
+        return cachedProc;
+    }
+
+    @Specialization(guards = { "!isNil(object)", "!isRubyProc(object)" }, replaces = "doRubySymbolASTInlined")
+    protected RubyProc doObject(VirtualFrame frame, Object object,
+            @Cached DispatchNode toProc,
             @Cached BranchProfile errorProfile) {
+        // The semantics are to call #method_missing here
         final Object coerced;
         try {
             coerced = toProc.dispatch(frame, object, "to_proc", null, EMPTY_ARGUMENTS);
         } catch (RaiseException e) {
             errorProfile.enter();
-            if (Layouts.BASIC_OBJECT.getLogicalClass(e.getException()) == coreLibrary().noMethodErrorClass) {
+            if (e.getException().getLogicalClass() == coreLibrary().noMethodErrorClass) {
                 throw new RaiseException(
                         getContext(),
                         coreExceptions().typeErrorNoImplicitConversion(object, "Proc", this));
@@ -55,14 +73,22 @@ public abstract class ToProcNode extends RubyContextSourceNode {
             }
         }
 
-        if (RubyGuards.isRubyProc(coerced)) {
-            return (DynamicObject) coerced;
+        if (coerced instanceof RubyProc) {
+            return (RubyProc) coerced;
         } else {
             errorProfile.enter();
             throw new RaiseException(
                     getContext(),
                     coreExceptions().typeErrorBadCoercion(object, "Proc", "to_proc", coerced, this));
         }
+    }
+
+    protected RubyProc getProcForSymbol(Map<RubyModule, RubyModule[]> refinements, RubySymbol symbol) {
+        return SymbolNodes.ToProcNode.getOrCreateProc(getContext(), refinements, symbol);
+    }
+
+    protected static Map<RubyModule, RubyModule[]> getRefinements(VirtualFrame frame) {
+        return RubyArguments.getDeclarationContext(frame).getRefinements();
     }
 
 }

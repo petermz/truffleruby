@@ -9,27 +9,26 @@
  */
 package org.truffleruby.core.mutex;
 
-import java.util.concurrent.locks.Condition;
-import java.util.concurrent.locks.ReentrantLock;
-
+import com.oracle.truffle.api.CompilerDirectives;
+import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.nodes.Node;
-import org.truffleruby.Layouts;
+import com.oracle.truffle.api.profiles.BranchProfile;
 import org.truffleruby.RubyContext;
 import org.truffleruby.core.exception.ExceptionOperations;
+import org.truffleruby.core.thread.RubyThread;
 import org.truffleruby.core.thread.ThreadManager;
 import org.truffleruby.language.RubyNode;
 import org.truffleruby.language.control.RaiseException;
 
-import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
-import com.oracle.truffle.api.object.DynamicObject;
-import com.oracle.truffle.api.profiles.BranchProfile;
+import java.util.concurrent.locks.Condition;
+import java.util.concurrent.locks.ReentrantLock;
 
 public abstract class MutexOperations {
 
     @TruffleBoundary
-    protected static void lock(RubyContext context, ReentrantLock lock, DynamicObject thread, RubyNode currentNode) {
+    protected static void lock(RubyContext context, ReentrantLock lock, RubyThread thread, RubyNode currentNode) {
         lockInternal(context, lock, currentNode);
-        Layouts.THREAD.getOwnedLocks(thread).add(lock);
+        thread.ownedLocks.add(lock);
     }
 
     @TruffleBoundary
@@ -42,21 +41,23 @@ public abstract class MutexOperations {
             lock.lockInterruptibly();
             return ThreadManager.BlockingAction.SUCCESS;
         });
+
+        if (!lock.isHeldByCurrentThread()) {
+            throw CompilerDirectives.shouldNotReachHere("lockInternal() did not acquire lock as expected");
+        }
     }
 
     @TruffleBoundary
     protected static void lockEvenWithExceptions(
-            RubyContext context, ReentrantLock lock, DynamicObject thread, Node currentNode) {
+            RubyContext context, ReentrantLock lock, RubyThread thread, Node currentNode) {
         // We need to re-lock this lock after a Mutex#sleep, no matter what, even if another thread throw us an exception.
         // Yet, we also need to allow safepoints to happen otherwise the thread that could unlock could be blocked.
-        try {
-            internalLockEvenWithException(context, lock, currentNode);
-        } finally {
-            Layouts.THREAD.getOwnedLocks(thread).add(lock);
-        }
+        internalLockEvenWithException(context, lock, currentNode);
+        thread.ownedLocks.add(lock);
     }
 
-    protected static void internalLockEvenWithException(RubyContext context, ReentrantLock lock, Node currentNode) {
+    @TruffleBoundary
+    public static void internalLockEvenWithException(RubyContext context, ReentrantLock lock, Node currentNode) {
         if (lock.isHeldByCurrentThread()) {
             throw new RaiseException(context, context.getCoreExceptions().threadErrorRecursiveLocking(currentNode));
         }
@@ -64,6 +65,7 @@ public abstract class MutexOperations {
         if (lock.tryLock()) {
             return;
         }
+
         Throwable throwable = null;
         try {
             while (true) {
@@ -79,7 +81,7 @@ public abstract class MutexOperations {
             }
         } finally {
             if (!lock.isHeldByCurrentThread()) {
-                throw new AssertionError("the lock could not be reacquired after Mutex#sleep");
+                throw CompilerDirectives.shouldNotReachHere("the lock could not be reacquired", throwable);
             }
         }
 
@@ -89,15 +91,22 @@ public abstract class MutexOperations {
     }
 
     @TruffleBoundary
-    protected static void unlock(ReentrantLock lock, DynamicObject thread) {
+    protected static void unlock(ReentrantLock lock, RubyThread thread) {
         unlockInternal(lock);
-        Layouts.THREAD.getOwnedLocks(thread).remove(lock);
+        thread.ownedLocks.remove(lock);
     }
 
     @TruffleBoundary
     public static void unlockInternal(ReentrantLock lock) {
-        assert lock.isHeldByCurrentThread();
+        if (!lock.isHeldByCurrentThread()) {
+            throw CompilerDirectives.shouldNotReachHere("the lock was not held when calling unlockInternal()");
+        }
         lock.unlock();
+    }
+
+    @TruffleBoundary
+    public static ReentrantLock newReentrantLock() {
+        return new ReentrantLock();
     }
 
     @TruffleBoundary
@@ -105,7 +114,6 @@ public abstract class MutexOperations {
         return lock.newCondition();
     }
 
-    @TruffleBoundary
     public static void checkOwnedMutex(RubyContext context, ReentrantLock lock, RubyNode currentNode,
             BranchProfile errorProfile) {
         if (!lock.isHeldByCurrentThread()) {

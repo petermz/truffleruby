@@ -13,7 +13,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.truffleruby.RubyContext;
-import org.truffleruby.RubyLanguage;
 import org.truffleruby.core.hash.ConcatHashLiteralNode;
 import org.truffleruby.core.hash.HashLiteralNode;
 import org.truffleruby.language.RubyNode;
@@ -62,8 +61,6 @@ public class ReloadArgumentsTranslator extends Translator {
 
     @Override
     public RubyNode visitArgsNode(ArgsParseNode node) {
-        final SourceIndexLength sourceSection = node.getPosition();
-
         final List<RubyNode> sequence = new ArrayList<>();
         final ParseNode[] args = node.getArgs();
         final int preCount = node.getPreCount();
@@ -89,11 +86,15 @@ public class ReloadArgumentsTranslator extends Translator {
             sequence.add(node.getRestArgNode().accept(this));
         }
 
-        if (node.getPostCount() > 0) {
-            RubyLanguage.LOGGER.warning(
-                    String.format(
-                            "post args in zsuper not yet implemented at %s%n",
-                            RubyContext.fileLine(sourceSection.toSourceSection(source))));
+        int postCount = node.getPostCount();
+
+        if (postCount > 0) {
+            index = -postCount;
+            int postIndex = node.getPostIndex();
+            for (int i = 0; i < postCount; i++) {
+                sequence.add(args[postIndex + i].accept(this));
+                index++;
+            }
         }
 
         RubyNode kwArgsNode = null;
@@ -111,7 +112,7 @@ public class ReloadArgumentsTranslator extends Translator {
                 keyValues[2 * i] = key;
                 keyValues[2 * i + 1] = value;
             }
-            kwArgsNode = HashLiteralNode.create(context, keyValues);
+            kwArgsNode = HashLiteralNode.create(language, keyValues);
         }
 
         if (node.hasKeyRest()) {
@@ -145,7 +146,7 @@ public class ReloadArgumentsTranslator extends Translator {
 
     @Override
     public RubyNode visitMultipleAsgnNode(MultipleAsgnParseNode node) {
-        return profileArgument(context, new ReadPreArgumentNode(index, MissingArgumentBehavior.NIL));
+        return profileArgument(language, new ReadPreArgumentNode(index, MissingArgumentBehavior.NIL));
     }
 
     @Override

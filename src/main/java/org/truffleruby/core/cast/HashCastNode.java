@@ -9,26 +9,29 @@
  */
 package org.truffleruby.core.cast;
 
+import org.truffleruby.core.hash.RubyHash;
+import org.truffleruby.core.numeric.RubyBignum;
+import org.truffleruby.language.Nil;
 import org.truffleruby.language.RubyContextSourceNode;
+import org.truffleruby.language.RubyDynamicObject;
 import org.truffleruby.language.RubyGuards;
 import org.truffleruby.language.RubyNode;
 import org.truffleruby.language.control.RaiseException;
-import org.truffleruby.language.dispatch.CallDispatchHeadNode;
 import org.truffleruby.language.dispatch.DispatchNode;
-
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.NodeChild;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.frame.VirtualFrame;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.BranchProfile;
+
+import static org.truffleruby.language.dispatch.DispatchConfiguration.PRIVATE_RETURN_MISSING;
 
 // TODO(CS): copy and paste of ArrayCastNode
 
 @NodeChild(value = "child", type = RubyNode.class)
 public abstract class HashCastNode extends RubyContextSourceNode {
 
-    @Child private CallDispatchHeadNode toHashNode = CallDispatchHeadNode.createReturnMissing();
+    @Child private DispatchNode toHashNode = DispatchNode.create(PRIVATE_RETURN_MISSING);
 
     protected abstract RubyNode getChild();
 
@@ -52,23 +55,23 @@ public abstract class HashCastNode extends RubyContextSourceNode {
         return nil;
     }
 
-    @Specialization(guards = "isNil(nil)")
-    protected Object castNil(Object nil) {
+    @Specialization
+    protected Object castNil(Nil nil) {
         return nil;
     }
 
-    @Specialization(guards = "isRubyBignum(value)")
-    protected Object castBignum(DynamicObject value) {
+    @Specialization
+    protected Object castBignum(RubyBignum value) {
         return nil;
     }
 
-    @Specialization(guards = "isRubyHash(hash)")
-    protected Object castHash(DynamicObject hash) {
+    @Specialization
+    protected Object castHash(RubyHash hash) {
         return hash;
     }
 
     @Specialization(guards = { "!isRubyBignum(object)", "!isRubyHash(object)" })
-    protected Object cast(DynamicObject object,
+    protected Object cast(RubyDynamicObject object,
             @Cached BranchProfile errorProfile) {
         final Object result = toHashNode.call(object, "to_hash");
 

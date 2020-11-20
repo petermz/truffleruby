@@ -10,18 +10,19 @@
 package org.truffleruby.core.format.convert;
 
 import org.truffleruby.core.format.FormatNode;
-import org.truffleruby.language.dispatch.CallDispatchHeadNode;
+import org.truffleruby.core.numeric.RubyBignum;
+import org.truffleruby.language.dispatch.DispatchNode;
 
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.dsl.NodeChild;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.frame.VirtualFrame;
-import com.oracle.truffle.api.object.DynamicObject;
+
 
 @NodeChild("value")
 public abstract class ToIntegerNode extends FormatNode {
 
-    @Child private CallDispatchHeadNode integerNode;
+    @Child private DispatchNode integerNode;
 
     public abstract Object executeToInteger(VirtualFrame frame, Object object);
 
@@ -35,8 +36,8 @@ public abstract class ToIntegerNode extends FormatNode {
         return value;
     }
 
-    @Specialization(guards = "isRubyBignum(value)")
-    protected DynamicObject toInteger(DynamicObject value) {
+    @Specialization
+    protected RubyBignum toInteger(RubyBignum value) {
         return value;
     }
 
@@ -45,11 +46,11 @@ public abstract class ToIntegerNode extends FormatNode {
         return (long) value;
     }
 
-    @Specialization(guards = { "!isInteger(value)", "!isLong(value)", "!isRubyBignum(value)" })
+    @Specialization(guards = "!isRubyNumber(value)")
     protected Object toInteger(VirtualFrame frame, Object value) {
         if (integerNode == null) {
             CompilerDirectives.transferToInterpreterAndInvalidate();
-            integerNode = insert(CallDispatchHeadNode.createPrivate());
+            integerNode = insert(DispatchNode.create());
         }
 
         return integerNode.call(getContext().getCoreLibrary().kernelModule, "Integer", value);

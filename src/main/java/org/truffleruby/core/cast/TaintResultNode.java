@@ -10,16 +10,16 @@
 
 package org.truffleruby.core.cast;
 
-import com.oracle.truffle.api.profiles.BranchProfile;
 import org.truffleruby.language.RubyContextSourceNode;
-import org.truffleruby.language.library.RubyLibrary;
+import org.truffleruby.language.RubyDynamicObject;
 import org.truffleruby.language.RubyNode;
 import org.truffleruby.language.arguments.RubyArguments;
+import org.truffleruby.language.library.RubyLibrary;
 
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.nodes.ControlFlowException;
-import com.oracle.truffle.api.object.DynamicObject;
+import com.oracle.truffle.api.profiles.BranchProfile;
 import com.oracle.truffle.api.profiles.ConditionProfile;
 
 public class TaintResultNode extends RubyContextSourceNode {
@@ -37,7 +37,6 @@ public class TaintResultNode extends RubyContextSourceNode {
         this.taintFromSelf = taintFromSelf;
         this.taintFromParameter = taintFromParameter;
         this.method = method;
-        this.rubyLibrarySource = RubyLibrary.getFactory().createDispatched(getRubyLibraryCacheLimit());
     }
 
     public TaintResultNode() {
@@ -45,7 +44,7 @@ public class TaintResultNode extends RubyContextSourceNode {
     }
 
     public Object maybeTaint(Object source, Object result) {
-        if (taintProfile.profile(rubyLibrarySource.isTainted(source))) {
+        if (taintProfile.profile(isTainted(source))) {
             if (rubyLibraryResult == null) {
                 CompilerDirectives.transferToInterpreterAndInvalidate();
                 rubyLibraryResult = insert(RubyLibrary.getFactory().createDispatched(getRubyLibraryCacheLimit()));
@@ -54,6 +53,14 @@ public class TaintResultNode extends RubyContextSourceNode {
         }
 
         return result;
+    }
+
+    private boolean isTainted(Object result) {
+        if (rubyLibrarySource == null) {
+            CompilerDirectives.transferToInterpreterAndInvalidate();
+            rubyLibrarySource = insert(RubyLibrary.getFactory().createDispatched(getRubyLibraryCacheLimit()));
+        }
+        return rubyLibrarySource.isTainted(result);
     }
 
     @Override
@@ -79,8 +86,8 @@ public class TaintResultNode extends RubyContextSourceNode {
                 if (taintFromParameter < RubyArguments.getArgumentsCount(frame)) {
                     final Object argument = RubyArguments.getArgument(frame, taintFromParameter);
 
-                    if (argument instanceof DynamicObject) {
-                        final DynamicObject taintSource = (DynamicObject) argument;
+                    if (argument instanceof RubyDynamicObject) {
+                        final RubyDynamicObject taintSource = (RubyDynamicObject) argument;
                         maybeTaint(taintSource, result);
                     }
                 }

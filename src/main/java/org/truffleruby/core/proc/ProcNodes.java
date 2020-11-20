@@ -9,9 +9,9 @@
  */
 package org.truffleruby.core.proc;
 
+import com.oracle.truffle.api.dsl.CachedLanguage;
 import org.jcodings.specific.UTF8Encoding;
-import org.truffleruby.Layouts;
-import org.truffleruby.RubyContext;
+import org.truffleruby.RubyLanguage;
 import org.truffleruby.builtins.CoreMethod;
 import org.truffleruby.builtins.CoreMethodArrayArgumentsNode;
 import org.truffleruby.builtins.CoreModule;
@@ -19,8 +19,12 @@ import org.truffleruby.builtins.Primitive;
 import org.truffleruby.builtins.PrimitiveArrayArgumentsNode;
 import org.truffleruby.builtins.PrimitiveNode;
 import org.truffleruby.builtins.UnaryCoreMethodNode;
+import org.truffleruby.core.array.RubyArray;
 import org.truffleruby.core.binding.BindingNodes;
+import org.truffleruby.core.binding.RubyBinding;
+import org.truffleruby.core.klass.RubyClass;
 import org.truffleruby.core.rope.CodeRange;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.core.string.StringNodes;
 import org.truffleruby.core.symbol.SymbolNodes;
 import org.truffleruby.language.NotProvided;
@@ -29,20 +33,18 @@ import org.truffleruby.language.arguments.ArgumentDescriptorUtils;
 import org.truffleruby.language.arguments.ReadCallerFrameNode;
 import org.truffleruby.language.arguments.RubyArguments;
 import org.truffleruby.language.control.RaiseException;
-import org.truffleruby.language.dispatch.CallDispatchHeadNode;
+import org.truffleruby.language.dispatch.DispatchNode;
 import org.truffleruby.language.locals.FindDeclarationVariableNodes.FindAndReadDeclarationVariableNode;
-import org.truffleruby.language.objects.AllocateObjectNode;
+import org.truffleruby.language.objects.AllocateHelperNode;
 import org.truffleruby.language.yield.CallBlockNode;
 import org.truffleruby.parser.ArgumentDescriptor;
 import org.truffleruby.parser.TranslatorEnvironment;
 
-import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.frame.MaterializedFrame;
 import com.oracle.truffle.api.frame.VirtualFrame;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.object.Shape;
 import com.oracle.truffle.api.profiles.ConditionProfile;
 import com.oracle.truffle.api.source.SourceSection;
@@ -54,174 +56,129 @@ public abstract class ProcNodes {
     public abstract static class AllocateNode extends UnaryCoreMethodNode {
 
         @Specialization
-        protected DynamicObject allocate(DynamicObject rubyClass) {
+        protected RubyProc allocate(RubyClass rubyClass) {
             throw new RaiseException(getContext(), coreExceptions().typeErrorAllocatorUndefinedFor(rubyClass, this));
         }
-
     }
 
     @CoreMethod(names = "new", constructor = true, needsBlock = true, rest = true)
     public abstract static class ProcNewNode extends CoreMethodArrayArgumentsNode {
 
-        @Child private CallDispatchHeadNode initializeNode;
-        @Child private AllocateObjectNode allocateObjectNode;
+        public static ProcNewNode create() {
+            return ProcNodesFactory.ProcNewNodeFactory.create(null);
+        }
 
-        public abstract DynamicObject executeProcNew(
-                VirtualFrame frame,
-                DynamicObject procClass,
-                Object[] args,
-                Object block);
+        public abstract RubyProc executeProcNew(VirtualFrame frame, RubyClass procClass, Object[] args, Object block);
 
         @Specialization
-        protected Object proc(VirtualFrame frame, DynamicObject procClass, Object[] args, NotProvided block,
-                @Cached("create(nil)") FindAndReadDeclarationVariableNode readNode,
-                @Cached ReadCallerFrameNode readCaller) {
+        protected RubyProc proc(VirtualFrame frame, RubyClass procClass, Object[] args, NotProvided block,
+                @Cached FindAndReadDeclarationVariableNode readNode,
+                @Cached ReadCallerFrameNode readCaller,
+                @Cached ProcNewNode recurseNode) {
             final MaterializedFrame parentFrame = readCaller.execute(frame);
 
-            Object parentBlock = readNode
-                    .execute(parentFrame, TranslatorEnvironment.METHOD_BLOCK_NAME);
-
-            if (parentBlock == nil) {
-                parentBlock = tryParentBlockForCExts();
-            }
+            Object parentBlock = readNode.execute(parentFrame, TranslatorEnvironment.METHOD_BLOCK_NAME, nil);
 
             if (parentBlock == nil) {
                 throw new RaiseException(getContext(), coreExceptions().argumentErrorProcWithoutBlock(this));
+            } else {
+                final RubyProc proc = (RubyProc) parentBlock;
+                return recurseNode.executeProcNew(frame, procClass, args, proc);
             }
-
-            return executeProcNew(frame, procClass, args, parentBlock);
-        }
-
-        @TruffleBoundary
-        protected static void debug(String str) {
-            System.err.println(str);
-        }
-
-        @TruffleBoundary
-        protected Object tryParentBlockForCExts() {
-            /* TODO CS 11-Mar-17 to pass the remaining cext proc specs we need to determine here if Proc.new has been
-             * called from a cext from rb_funcall, and then reach down the stack to the Ruby method that originally went
-             * into C and get the block from there. */
-
-            return nil;
         }
 
         @Specialization(guards = { "procClass == getProcClass()", "block.getShape() == getProcShape()" })
-        protected DynamicObject procNormalOptimized(DynamicObject procClass, Object[] args, DynamicObject block) {
+        protected RubyProc procNormalOptimized(RubyClass procClass, Object[] args, RubyProc block) {
             return block;
         }
 
-        protected DynamicObject getProcClass() {
-            return coreLibrary().procClass;
-        }
-
-        protected Shape getProcShape() {
-            return coreLibrary().procFactory.getShape();
-        }
-
         @Specialization(guards = "procClass == metaClass(block)")
-        protected DynamicObject procNormal(DynamicObject procClass, Object[] args, DynamicObject block) {
+        protected RubyProc procNormal(RubyClass procClass, Object[] args, RubyProc block) {
             return block;
         }
 
         @Specialization(guards = "procClass != metaClass(block)")
-        protected DynamicObject procSpecial(
-                VirtualFrame frame,
-                DynamicObject procClass,
-                Object[] args,
-                DynamicObject block) {
+        protected RubyProc procSpecial(RubyClass procClass, Object[] args, RubyProc block,
+                @Cached AllocateHelperNode allocateHelper,
+                @Cached DispatchNode initialize,
+                @CachedLanguage RubyLanguage language) {
             // Instantiate a new instance of procClass as classes do not correspond
 
-            final DynamicObject proc = getAllocateObjectNode().allocate(procClass, Layouts.PROC.build(
-                    Layouts.PROC.getType(block),
-                    Layouts.PROC.getSharedMethodInfo(block),
-                    Layouts.PROC.getCallTargetForType(block),
-                    Layouts.PROC.getCallTargetForLambdas(block),
-                    Layouts.PROC.getDeclarationFrame(block),
-                    Layouts.PROC.getMethod(block),
-                    Layouts.PROC.getBlock(block),
-                    Layouts.PROC.getFrameOnStackMarker(block),
-                    Layouts.PROC.getDeclarationContext(block)));
+            final RubyProc proc = new RubyProc(
+                    procClass,
+                    allocateHelper.getCachedShape(procClass),
+                    block.type,
+                    block.sharedMethodInfo,
+                    block.callTargetForType,
+                    block.callTargetForLambdas,
+                    block.declarationFrame,
+                    block.declarationStorage,
+                    block.method,
+                    block.block,
+                    block.frameOnStackMarker,
+                    block.declarationContext);
 
-            getInitializeNode().callWithBlock(proc, "initialize", block, args);
-
+            allocateHelper.trace(proc, this, language);
+            initialize.callWithBlock(proc, "initialize", block, args);
             return proc;
         }
 
-        protected DynamicObject metaClass(DynamicObject object) {
-            return Layouts.BASIC_OBJECT.getMetaClass(object);
+        protected RubyClass getProcClass() {
+            return coreLibrary().procClass;
         }
 
-        private AllocateObjectNode getAllocateObjectNode() {
-            if (allocateObjectNode == null) {
-                CompilerDirectives.transferToInterpreterAndInvalidate();
-                allocateObjectNode = insert(AllocateObjectNode.create());
-            }
-
-            return allocateObjectNode;
+        protected Shape getProcShape() {
+            return RubyLanguage.procShape;
         }
 
-        private CallDispatchHeadNode getInitializeNode() {
-            if (initializeNode == null) {
-                CompilerDirectives.transferToInterpreterAndInvalidate();
-                initializeNode = insert(CallDispatchHeadNode.createPrivate());
-            }
-
-            return initializeNode;
+        protected RubyClass metaClass(RubyProc object) {
+            return object.getMetaClass();
         }
-
     }
 
     @CoreMethod(names = { "dup", "clone" })
     public abstract static class DupNode extends UnaryCoreMethodNode {
 
-        @Child private AllocateObjectNode allocateObjectNode;
-
         @Specialization
-        protected DynamicObject dup(DynamicObject proc) {
-            final DynamicObject copy = getAllocateObjectNode()
-                    .allocate(Layouts.BASIC_OBJECT.getLogicalClass(proc), Layouts.PROC.build(
-                            Layouts.PROC.getType(proc),
-                            Layouts.PROC.getSharedMethodInfo(proc),
-                            Layouts.PROC.getCallTargetForType(proc),
-                            Layouts.PROC.getCallTargetForLambdas(proc),
-                            Layouts.PROC.getDeclarationFrame(proc),
-                            Layouts.PROC.getMethod(proc),
-                            Layouts.PROC.getBlock(proc),
-                            Layouts.PROC.getFrameOnStackMarker(proc),
-                            Layouts.PROC.getDeclarationContext(proc)));
+        protected RubyProc dup(RubyProc proc,
+                @Cached AllocateHelperNode allocateHelper,
+                @CachedLanguage RubyLanguage language) {
+            final RubyClass logicalClass = proc.getLogicalClass();
+            final RubyProc copy = new RubyProc(
+                    logicalClass,
+                    allocateHelper.getCachedShape(logicalClass),
+                    proc.type,
+                    proc.sharedMethodInfo,
+                    proc.callTargetForType,
+                    proc.callTargetForLambdas,
+                    proc.declarationFrame,
+                    proc.declarationStorage,
+                    proc.method,
+                    proc.block,
+                    proc.frameOnStackMarker,
+                    proc.declarationContext);
 
+            allocateHelper.trace(copy, this, language);
             return copy;
         }
-
-        private AllocateObjectNode getAllocateObjectNode() {
-            if (allocateObjectNode == null) {
-                CompilerDirectives.transferToInterpreterAndInvalidate();
-                allocateObjectNode = insert(AllocateObjectNode.create());
-            }
-
-            return allocateObjectNode;
-        }
-
     }
 
     @CoreMethod(names = "arity")
     public abstract static class ArityNode extends CoreMethodArrayArgumentsNode {
 
         @Specialization
-        protected int arity(DynamicObject proc) {
-            return Layouts.PROC.getSharedMethodInfo(proc).getArity().getArityNumber();
+        protected int arity(RubyProc proc) {
+            return proc.getArityNumber();
         }
-
     }
 
     @CoreMethod(names = "binding")
     public abstract static class BindingNode extends CoreMethodArrayArgumentsNode {
 
         @Specialization
-        protected DynamicObject binding(DynamicObject proc) {
-            final MaterializedFrame frame = Layouts.PROC.getDeclarationFrame(proc);
-            final SourceSection sourceSection = Layouts.PROC.getSharedMethodInfo(proc).getSourceSection();
+        protected RubyBinding binding(RubyProc proc) {
+            final MaterializedFrame frame = proc.declarationFrame;
+            final SourceSection sourceSection = proc.sharedMethodInfo.getSourceSection();
             return BindingNodes.createBinding(getContext(), frame, sourceSection);
         }
     }
@@ -232,9 +189,9 @@ public abstract class ProcNodes {
         @Child private CallBlockNode callBlockNode = CallBlockNode.create();
 
         @Specialization
-        protected Object call(DynamicObject proc, Object[] args, NotProvided block) {
+        protected Object call(RubyProc proc, Object[] args, NotProvided block) {
             return callBlockNode.executeCallBlock(
-                    Layouts.PROC.getDeclarationContext(proc),
+                    proc.declarationContext,
                     proc,
                     ProcOperations.getSelf(proc),
                     null,
@@ -242,9 +199,9 @@ public abstract class ProcNodes {
         }
 
         @Specialization
-        protected Object call(DynamicObject proc, Object[] args, DynamicObject block) {
+        protected Object call(RubyProc proc, Object[] args, RubyProc block) {
             return callBlockNode.executeCallBlock(
-                    Layouts.PROC.getDeclarationContext(proc),
+                    proc.declarationContext,
                     proc,
                     ProcOperations.getSelf(proc),
                     block,
@@ -257,8 +214,8 @@ public abstract class ProcNodes {
     public abstract static class LambdaNode extends CoreMethodArrayArgumentsNode {
 
         @Specialization
-        protected boolean lambda(DynamicObject proc) {
-            return Layouts.PROC.getType(proc) == ProcType.LAMBDA;
+        protected boolean lambda(RubyProc proc) {
+            return proc.type == ProcType.LAMBDA;
         }
 
     }
@@ -268,9 +225,9 @@ public abstract class ProcNodes {
 
         @TruffleBoundary
         @Specialization
-        protected DynamicObject parameters(DynamicObject proc) {
-            final ArgumentDescriptor[] argsDesc = Layouts.PROC.getSharedMethodInfo(proc).getArgumentDescriptors();
-            final boolean isLambda = Layouts.PROC.getType(proc) == ProcType.LAMBDA;
+        protected RubyArray parameters(RubyProc proc) {
+            final ArgumentDescriptor[] argsDesc = proc.sharedMethodInfo.getArgumentDescriptors();
+            final boolean isLambda = proc.type == ProcType.LAMBDA;
             return ArgumentDescriptorUtils.argumentDescriptorsToParameters(getContext(), argsDesc, isLambda);
         }
 
@@ -283,15 +240,15 @@ public abstract class ProcNodes {
 
         @TruffleBoundary
         @Specialization
-        protected Object sourceLocation(DynamicObject proc) {
-            SourceSection sourceSection = Layouts.PROC.getSharedMethodInfo(proc).getSourceSection();
+        protected Object sourceLocation(RubyProc proc) {
+            SourceSection sourceSection = proc.sharedMethodInfo.getSourceSection();
 
-            if (!sourceSection.isAvailable() ||
-                    RubyContext.getPath(sourceSection.getSource()).endsWith("/lib/truffle/truffle/cext.rb")) {
+            final String sourcePath = getContext().getSourcePath(sourceSection.getSource());
+            if (!sourceSection.isAvailable() || sourcePath.endsWith("/lib/truffle/truffle/cext.rb")) {
                 return nil;
             } else {
-                final DynamicObject file = makeStringNode.executeMake(
-                        RubyContext.getPath(sourceSection.getSource()),
+                final RubyString file = makeStringNode.executeMake(
+                        sourcePath,
                         UTF8Encoding.INSTANCE,
                         CodeRange.CR_UNKNOWN);
 
@@ -306,31 +263,34 @@ public abstract class ProcNodes {
     public abstract static class ProcCreateSameArityNode extends PrimitiveArrayArgumentsNode {
 
         @Specialization
-        protected DynamicObject createSameArityProc(DynamicObject userProc, DynamicObject block,
-                @Cached AllocateObjectNode allocateObjectNode) {
-            final DynamicObject composedProc = allocateObjectNode
-                    .allocate(coreLibrary().procClass, Layouts.PROC.build(
-                            Layouts.PROC.getType(block),
-                            Layouts.PROC.getSharedMethodInfo(userProc),
-                            Layouts.PROC.getCallTargetForType(block),
-                            Layouts.PROC.getCallTargetForLambdas(block),
-                            Layouts.PROC.getDeclarationFrame(block),
-                            Layouts.PROC.getMethod(block),
-                            Layouts.PROC.getBlock(block),
-                            Layouts.PROC.getFrameOnStackMarker(block),
-                            Layouts.PROC.getDeclarationContext(block)));
+        protected RubyProc createSameArityProc(RubyProc userProc, RubyProc block,
+                @Cached AllocateHelperNode allocateHelper,
+                @CachedLanguage RubyLanguage language) {
+            final RubyProc composedProc = new RubyProc(
+                    coreLibrary().procClass,
+                    RubyLanguage.procShape,
+                    block.type,
+                    userProc.sharedMethodInfo,
+                    block.callTargetForType,
+                    block.callTargetForLambdas,
+                    block.declarationFrame,
+                    block.declarationStorage,
+                    block.method,
+                    block.block,
+                    block.frameOnStackMarker,
+                    block.declarationContext);
+            allocateHelper.trace(composedProc, this, language);
             return composedProc;
         }
-
     }
 
     @Primitive(name = "proc_symbol_to_proc_symbol")
     public abstract static class ProcSymbolToProcSymbolNode extends PrimitiveArrayArgumentsNode {
 
         @Specialization
-        protected Object symbolToProcSymbol(DynamicObject proc) {
-            if (Layouts.PROC.getSharedMethodInfo(proc).getArity() == SymbolNodes.ToProcNode.ARITY) {
-                return getSymbol(Layouts.PROC.getSharedMethodInfo(proc).getName());
+        protected Object symbolToProcSymbol(RubyProc proc) {
+            if (proc.sharedMethodInfo.getArity() == SymbolNodes.ToProcNode.ARITY) {
+                return getSymbol(proc.sharedMethodInfo.getName());
             } else {
                 return nil;
             }
@@ -366,6 +326,4 @@ public abstract class ProcNodes {
             }
         }
     }
-
-
 }

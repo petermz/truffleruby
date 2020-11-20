@@ -10,6 +10,7 @@
 package org.truffleruby.language;
 
 import org.truffleruby.RubyContext;
+import org.truffleruby.RubyLanguage;
 import org.truffleruby.language.methods.SharedMethodInfo;
 
 import com.oracle.truffle.api.Assumption;
@@ -18,16 +19,18 @@ import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.source.SourceSection;
 import com.oracle.truffle.api.utilities.CyclicAssumption;
+import org.truffleruby.language.methods.Split;
 
 public class RubyRootNode extends RubyBaseRootNode {
 
     private final RubyContext context;
     private final SharedMethodInfo sharedMethodInfo;
-    private final boolean allowCloning;
+    private Split split;
 
     @Child private RubyNode body;
 
     private CyclicAssumption needsCallerAssumption = new CyclicAssumption("needs caller frame");
+    private CyclicAssumption needsStorageAssumption = new CyclicAssumption("needs caller special variables");
 
     public RubyRootNode(
             RubyContext context,
@@ -35,15 +38,15 @@ public class RubyRootNode extends RubyBaseRootNode {
             FrameDescriptor frameDescriptor,
             SharedMethodInfo sharedMethodInfo,
             RubyNode body,
-            boolean allowCloning) {
-        super(context.getLanguage(), frameDescriptor, sourceSection);
+            Split split) {
+        super(context.getLanguageSlow(), frameDescriptor, sourceSection);
         assert sourceSection != null;
         assert body != null;
 
         this.context = context;
         this.sharedMethodInfo = sharedMethodInfo;
         this.body = body;
-        this.allowCloning = allowCloning;
+        this.split = split;
 
         // Ensure the body node is instrument-able, which requires a non-null SourceSection
         if (!body.hasSource()) {
@@ -56,13 +59,26 @@ public class RubyRootNode extends RubyBaseRootNode {
 
     @Override
     public Object execute(VirtualFrame frame) {
+        assert RubyLanguage.getCurrentContext() == context;
         context.getSafepointManager().poll(this);
         return body.execute(frame);
     }
 
     @Override
     public boolean isCloningAllowed() {
-        return allowCloning;
+        return split != Split.NEVER;
+    }
+
+    public boolean shouldAlwaysClone() {
+        return split == Split.ALWAYS;
+    }
+
+    public Split getSplit() {
+        return split;
+    }
+
+    public void setSplit(Split split) {
+        this.split = split;
     }
 
     @Override
@@ -95,10 +111,19 @@ public class RubyRootNode extends RubyBaseRootNode {
         needsCallerAssumption.invalidate();
     }
 
+    public Assumption getNeedsStorageAssumption() {
+        return needsStorageAssumption.getAssumption();
+    }
+
+    public synchronized void invalidateNeedsStorageAssumption() {
+        needsStorageAssumption.invalidate();
+    }
+
     @Override
     public Node copy() {
         RubyRootNode root = (RubyRootNode) super.copy();
         root.needsCallerAssumption = new CyclicAssumption("needs caller frame");
+        root.needsStorageAssumption = new CyclicAssumption("needs caller special variables");
         return root;
     }
 

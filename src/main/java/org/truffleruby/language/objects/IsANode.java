@@ -9,23 +9,18 @@
  */
 package org.truffleruby.language.objects;
 
-import org.truffleruby.Layouts;
-import org.truffleruby.RubyContext;
 import org.truffleruby.RubyLanguage;
+import org.truffleruby.core.klass.RubyClass;
 import org.truffleruby.core.module.ModuleOperations;
+import org.truffleruby.core.module.RubyModule;
 import org.truffleruby.language.RubyBaseNode;
-import org.truffleruby.language.control.RaiseException;
 
 import com.oracle.truffle.api.Assumption;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.dsl.Cached;
-import com.oracle.truffle.api.dsl.CachedContext;
 import com.oracle.truffle.api.dsl.GenerateUncached;
-import com.oracle.truffle.api.dsl.ReportPolymorphism;
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.object.DynamicObject;
 
-@ReportPolymorphism
 @GenerateUncached
 public abstract class IsANode extends RubyBaseNode {
 
@@ -33,41 +28,38 @@ public abstract class IsANode extends RubyBaseNode {
         return IsANodeGen.create();
     }
 
-    public abstract boolean executeIsA(Object self, DynamicObject module);
+    public static IsANode getUncached() {
+        return IsANodeGen.getUncached();
+    }
+
+    public abstract boolean executeIsA(Object self, RubyModule module);
 
     @Specialization(
             guards = {
-                    "isRubyModule(cachedModule)",
-                    "metaClassNode.executeMetaClass(self) == cachedMetaClass",
+                    "metaClassNode.execute(self) == cachedMetaClass",
                     "module == cachedModule" },
             assumptions = "getHierarchyUnmodifiedAssumption(cachedModule)",
             limit = "getCacheLimit()")
-    protected boolean isACached(Object self, DynamicObject module,
+    protected boolean isACached(Object self, RubyModule module,
             @Cached MetaClassNode metaClassNode,
-            @Cached("metaClassNode.executeMetaClass(self)") DynamicObject cachedMetaClass,
-            @Cached("module") DynamicObject cachedModule,
+            @Cached("metaClassNode.execute(self)") RubyClass cachedMetaClass,
+            @Cached("module") RubyModule cachedModule,
             @Cached("isA(cachedMetaClass, cachedModule)") boolean result) {
         return result;
     }
 
-    public Assumption getHierarchyUnmodifiedAssumption(DynamicObject module) {
-        return Layouts.MODULE.getFields(module).getHierarchyUnmodifiedAssumption();
+    public Assumption getHierarchyUnmodifiedAssumption(RubyModule module) {
+        return module.fields.getHierarchyUnmodifiedAssumption();
     }
 
-    @Specialization(guards = "isRubyModule(module)", replaces = "isACached")
-    protected boolean isAUncached(Object self, DynamicObject module,
+    @Specialization(replaces = "isACached")
+    protected boolean isAUncached(Object self, RubyModule module,
             @Cached MetaClassNode metaClassNode) {
-        return isA(metaClassNode.executeMetaClass(self), module);
-    }
-
-    @Specialization(guards = "!isRubyModule(module)")
-    protected boolean isATypeError(Object self, DynamicObject module,
-            @CachedContext(RubyLanguage.class) RubyContext context) {
-        throw new RaiseException(context, context.getCoreExceptions().typeError("class or module required", this));
+        return isA(metaClassNode.execute(self), module);
     }
 
     @TruffleBoundary
-    protected boolean isA(DynamicObject metaClass, DynamicObject module) {
+    protected boolean isA(RubyClass metaClass, RubyModule module) {
         return ModuleOperations.assignableTo(metaClass, module);
     }
 

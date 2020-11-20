@@ -11,24 +11,23 @@ package org.truffleruby.language.objects;
 
 import org.truffleruby.RubyContext;
 import org.truffleruby.language.RubyContextSourceNode;
+import org.truffleruby.language.RubyDynamicObject;
 import org.truffleruby.language.RubyNode;
-
-import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
-import com.oracle.truffle.api.CompilerDirectives;
-import com.oracle.truffle.api.frame.VirtualFrame;
-import com.oracle.truffle.api.object.DynamicObject;
-import com.oracle.truffle.api.profiles.ConditionProfile;
 import org.truffleruby.language.WarningNode;
+
+import com.oracle.truffle.api.CompilerDirectives;
+import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
+import com.oracle.truffle.api.frame.VirtualFrame;
+import com.oracle.truffle.api.object.DynamicObjectLibrary;
+import com.oracle.truffle.api.profiles.ConditionProfile;
 
 public class ReadInstanceVariableNode extends RubyContextSourceNode {
 
     private final String name;
 
     @Child private RubyNode receiver;
-    @Child private ReadObjectFieldNode readNode;
-    @Child private ReadObjectFieldNode readOrNullNode;
+    @Child private DynamicObjectLibrary objectLibrary;
     @Child private WarningNode warningNode;
-    @Child private HasFieldNode hasFieldNode;
 
     private final ConditionProfile objectProfile = ConditionProfile.create();
 
@@ -48,32 +47,15 @@ public class ReadInstanceVariableNode extends RubyContextSourceNode {
     public Object execute(VirtualFrame frame) {
         final Object receiverObject = receiver.execute(frame);
 
-        if (objectProfile.profile(receiverObject instanceof DynamicObject)) {
-            if (warnIfUndefined && !hasFieldNode((DynamicObject) receiverObject)) {
+        if (objectProfile.profile(receiverObject instanceof RubyDynamicObject)) {
+            final DynamicObjectLibrary objectLibrary = getObjectLibrary();
+            final RubyDynamicObject dynamicObject = (RubyDynamicObject) receiverObject;
+            if (warnIfUndefined && !objectLibrary.containsKey(dynamicObject, name)) {
                 warnNotInitialized();
             }
-            return getReadNode().execute((DynamicObject) receiverObject, name, nil);
+            return objectLibrary.getOrDefault(dynamicObject, name, nil);
         } else {
             return nil;
-        }
-    }
-
-    private boolean hasFieldNode(DynamicObject receiverObject) {
-        if (hasFieldNode == null) {
-            CompilerDirectives.transferToInterpreterAndInvalidate();
-            hasFieldNode = insert(HasFieldNode.create());
-        }
-        return hasFieldNode.execute(receiverObject, name);
-    }
-
-    private void warnNotInitialized() {
-        if (warningNode == null) {
-            CompilerDirectives.transferToInterpreterAndInvalidate();
-            warningNode = insert(new WarningNode());
-        }
-
-        if (warningNode.shouldWarn()) {
-            warningNode.warningMessage(getSourceSection(), getWarningMessage());
         }
     }
 
@@ -86,33 +68,39 @@ public class ReadInstanceVariableNode extends RubyContextSourceNode {
     public Object isDefined(VirtualFrame frame, RubyContext context) {
         final Object receiverObject = receiver.execute(frame);
 
-        if (objectProfile.profile(receiverObject instanceof DynamicObject)) {
-            if (getReadOrNullNode().execute((DynamicObject) receiverObject, name, null) == null) {
-                return nil;
+        if (objectProfile.profile(receiverObject instanceof RubyDynamicObject)) {
+            final DynamicObjectLibrary objectLibrary = getObjectLibrary();
+            final RubyDynamicObject dynamicObject = (RubyDynamicObject) receiverObject;
+            if (objectLibrary.containsKey(dynamicObject, name)) {
+                return coreStrings().INSTANCE_VARIABLE.createInstance(context);
             } else {
-                return coreStrings().INSTANCE_VARIABLE.createInstance();
+                return nil;
             }
         } else {
             return false;
         }
     }
 
-    private ReadObjectFieldNode getReadNode() {
-        if (readNode == null) {
+    private DynamicObjectLibrary getObjectLibrary() {
+        if (objectLibrary == null) {
             CompilerDirectives.transferToInterpreterAndInvalidate();
-            readNode = insert(ReadObjectFieldNode.create());
+            objectLibrary = insert(
+                    DynamicObjectLibrary
+                            .getFactory()
+                            .createDispatched(getContext().getOptions().INSTANCE_VARIABLE_CACHE));
         }
-
-        return readNode;
+        return objectLibrary;
     }
 
-    private ReadObjectFieldNode getReadOrNullNode() {
-        if (readOrNullNode == null) {
+    private void warnNotInitialized() {
+        if (warningNode == null) {
             CompilerDirectives.transferToInterpreterAndInvalidate();
-            readOrNullNode = insert(ReadObjectFieldNode.create());
+            warningNode = insert(new WarningNode());
         }
 
-        return readOrNullNode;
+        if (warningNode.shouldWarn()) {
+            warningNode.warningMessage(getSourceSection(), getWarningMessage());
+        }
     }
 
 }

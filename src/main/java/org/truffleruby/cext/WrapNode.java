@@ -17,23 +17,26 @@ import org.truffleruby.Layouts;
 import org.truffleruby.RubyContext;
 import org.truffleruby.RubyLanguage;
 import org.truffleruby.core.rope.RopeOperations;
-import org.truffleruby.core.symbol.RubySymbol;
 import org.truffleruby.extra.ffi.Pointer;
+import org.truffleruby.language.ImmutableRubyObject;
 import org.truffleruby.language.Nil;
-import org.truffleruby.language.RubyBaseNode;
 import org.truffleruby.language.NotProvided;
+import org.truffleruby.language.RubyBaseNode;
+import org.truffleruby.language.RubyDynamicObject;
+import org.truffleruby.language.RubyGuards;
 import org.truffleruby.language.control.RaiseException;
-import org.truffleruby.language.objects.ReadObjectFieldNode;
-import org.truffleruby.language.objects.WriteObjectFieldNode;
 
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.CachedContext;
 import com.oracle.truffle.api.dsl.GenerateUncached;
+import com.oracle.truffle.api.dsl.ImportStatic;
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.object.DynamicObject;
+import com.oracle.truffle.api.library.CachedLibrary;
+import com.oracle.truffle.api.object.DynamicObjectLibrary;
 import com.oracle.truffle.api.profiles.BranchProfile;
 
 @GenerateUncached
+@ImportStatic(RubyGuards.class)
 public abstract class WrapNode extends RubyBaseNode {
 
     public static WrapNode create() {
@@ -84,13 +87,12 @@ public abstract class WrapNode extends RubyBaseNode {
     }
 
     @Specialization
-    protected ValueWrapper wrapNil(Nil value,
-            @CachedContext(RubyLanguage.class) RubyContext context) {
-        return context.getValueWrapperManager().nilWrapper;
+    protected ValueWrapper wrapNil(Nil value) {
+        return value.getValueWrapper();
     }
 
-    @Specialization
-    protected ValueWrapper wrapSymbol(RubySymbol value,
+    @Specialization(guards = "!isNil(value)")
+    protected ValueWrapper wrapImmutable(ImmutableRubyObject value,
             @Cached BranchProfile noHandleProfile) {
         ValueWrapper wrapper = value.getValueWrapper();
         if (wrapper == null) {
@@ -109,22 +111,21 @@ public abstract class WrapNode extends RubyBaseNode {
         return wrapper;
     }
 
-    @Specialization(guards = "isRubyDynamicObject(value)")
-    protected ValueWrapper wrapValue(DynamicObject value,
-            @Cached ReadObjectFieldNode readWrapperNode,
-            @Cached WriteObjectFieldNode writeWrapperNode,
+    @Specialization(limit = "getDynamicObjectCacheLimit()")
+    protected ValueWrapper wrapValue(RubyDynamicObject value,
+            @CachedLibrary("value") DynamicObjectLibrary objectLibrary,
             @Cached BranchProfile noHandleProfile) {
-        ValueWrapper wrapper = (ValueWrapper) readWrapperNode.execute(value, Layouts.VALUE_WRAPPER_IDENTIFIER, null);
+        ValueWrapper wrapper = (ValueWrapper) objectLibrary.getOrDefault(value, Layouts.VALUE_WRAPPER_IDENTIFIER, null);
         if (wrapper == null) {
             noHandleProfile.enter();
             synchronized (value) {
-                wrapper = (ValueWrapper) readWrapperNode.execute(value, Layouts.VALUE_WRAPPER_IDENTIFIER, null);
+                wrapper = (ValueWrapper) objectLibrary.getOrDefault(value, Layouts.VALUE_WRAPPER_IDENTIFIER, null);
                 if (wrapper == null) {
                     /* This is double-checked locking, but it's safe because the object that we create, the
                      * ValueWrapper, is not published until after a memory store fence. */
                     wrapper = new ValueWrapper(value, UNSET_HANDLE, null);
                     Pointer.UNSAFE.storeFence();
-                    writeWrapperNode.write(value, Layouts.VALUE_WRAPPER_IDENTIFIER, wrapper);
+                    objectLibrary.put(value, Layouts.VALUE_WRAPPER_IDENTIFIER, wrapper);
                 }
             }
         }
@@ -137,5 +138,9 @@ public abstract class WrapNode extends RubyBaseNode {
         throw new RaiseException(
                 context,
                 context.getCoreExceptions().argumentError("Attempt to wrap something that isn't an Ruby object", this));
+    }
+
+    protected int getDynamicObjectCacheLimit() {
+        return RubyLanguage.getCurrentContext().getOptions().INSTANCE_VARIABLE_CACHE;
     }
 }

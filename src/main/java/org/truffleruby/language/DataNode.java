@@ -10,21 +10,19 @@
 package org.truffleruby.language;
 
 import org.jcodings.Encoding;
-import org.truffleruby.Layouts;
-import org.truffleruby.RubyContext;
 import org.truffleruby.core.rope.CodeRange;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.core.string.StringNodes;
-import org.truffleruby.language.dispatch.CallDispatchHeadNode;
+import org.truffleruby.language.dispatch.DispatchNode;
 
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.frame.VirtualFrame;
-import com.oracle.truffle.api.object.DynamicObject;
 
 public class DataNode extends RubyContextSourceNode {
 
     @Child private StringNodes.MakeStringNode makeStringNode;
-    @Child private CallDispatchHeadNode callHelperNode;
+    @Child private DispatchNode callHelperNode;
 
     private final int endPosition;
 
@@ -41,23 +39,23 @@ public class DataNode extends RubyContextSourceNode {
 
         if (callHelperNode == null) {
             CompilerDirectives.transferToInterpreterAndInvalidate();
-            callHelperNode = insert(CallDispatchHeadNode.createPrivate());
+            callHelperNode = insert(DispatchNode.create());
         }
 
         final String path = getPath();
         final Encoding localeEncoding = getContext().getEncodingManager().getLocaleEncoding();
-        final DynamicObject pathString = makeStringNode.executeMake(path, localeEncoding, CodeRange.CR_UNKNOWN);
+        final RubyString pathString = makeStringNode.executeMake(path, localeEncoding, CodeRange.CR_UNKNOWN);
         final Object data = callHelperNode
                 .call(coreLibrary().truffleInternalModule, "get_data", pathString, endPosition);
 
-        Layouts.MODULE.getFields(coreLibrary().objectClass).setConstant(getContext(), null, "DATA", data);
+        coreLibrary().objectClass.fields.setConstant(getContext(), null, "DATA", data);
 
         return nil;
     }
 
     @TruffleBoundary
     private String getPath() {
-        return RubyContext.getPath(getEncapsulatingSourceSection().getSource());
+        return getContext().getSourcePath(getEncapsulatingSourceSection().getSource());
     }
 
 }

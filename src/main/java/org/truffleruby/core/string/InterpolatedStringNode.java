@@ -14,13 +14,11 @@ import org.truffleruby.core.cast.ToSNode;
 import org.truffleruby.core.rope.Rope;
 import org.truffleruby.core.rope.RopeOperations;
 import org.truffleruby.language.RubyContextSourceNode;
-import org.truffleruby.language.RubyGuards;
 import org.truffleruby.language.library.RubyLibrary;
 
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.nodes.ExplodeLoop;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.ConditionProfile;
 
 /** A list of expressions to build up into a string. */
@@ -47,14 +45,13 @@ public final class InterpolatedStringNode extends RubyContextSourceNode {
     public Object execute(VirtualFrame frame) {
 
         // Start with an empty string to ensure the result has class String and the proper encoding.
-        DynamicObject builder = StringOperations.createString(getContext(), emptyRope);
+        RubyString builder = StringOperations.createString(getContext(), emptyRope);
         boolean tainted = false;
 
         // TODO (nirvdrum 11-Jan-16) Rewrite to avoid massively unbalanced trees.
         for (ToSNode child : children) {
             final Object toInterpolate = child.execute(frame);
-            assert RubyGuards.isRubyString(toInterpolate);
-            builder = executeStringAppend(builder, (DynamicObject) toInterpolate);
+            builder = executeStringAppend(builder, (RubyString) toInterpolate);
             tainted |= executeIsTainted(toInterpolate);
         }
 
@@ -73,7 +70,7 @@ public final class InterpolatedStringNode extends RubyContextSourceNode {
         rubyLibraryTaint.taint(obj);
     }
 
-    private DynamicObject executeStringAppend(DynamicObject builder, DynamicObject string) {
+    private RubyString executeStringAppend(RubyString builder, RubyString string) {
         if (appendNode == null) {
             CompilerDirectives.transferToInterpreterAndInvalidate();
             appendNode = insert(StringNodesFactory.StringAppendPrimitiveNodeFactory.create(null));

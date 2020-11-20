@@ -9,22 +9,27 @@
  */
 package org.truffleruby.extra;
 
-import org.truffleruby.Layouts;
+import org.truffleruby.RubyLanguage;
 import org.truffleruby.builtins.CoreMethod;
 import org.truffleruby.builtins.CoreMethodArrayArgumentsNode;
 import org.truffleruby.builtins.CoreModule;
 import org.truffleruby.builtins.Primitive;
 import org.truffleruby.builtins.PrimitiveNode;
+import org.truffleruby.core.method.RubyMethod;
+import org.truffleruby.core.method.RubyUnboundMethod;
 import org.truffleruby.core.proc.ProcType;
+import org.truffleruby.core.string.RubyString;
+import org.truffleruby.core.proc.RubyProc;
 import org.truffleruby.interop.ToJavaStringNode;
 import org.truffleruby.language.RubyNode;
 import org.truffleruby.language.RubyRootNode;
+import org.truffleruby.language.methods.Split;
+import org.truffleruby.language.threadlocal.SpecialVariableStorage;
 import org.truffleruby.language.arguments.RubyArguments;
 import org.truffleruby.language.control.RaiseException;
 import org.truffleruby.language.literal.ObjectLiteralNode;
 import org.truffleruby.language.locals.ReadDeclarationVariableNode;
 import org.truffleruby.language.locals.WriteDeclarationVariableNode;
-import org.truffleruby.language.methods.InternalMethod;
 
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
@@ -35,7 +40,6 @@ import com.oracle.truffle.api.dsl.NodeChild;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.frame.MaterializedFrame;
 import com.oracle.truffle.api.nodes.NodeUtil;
-import com.oracle.truffle.api.object.DynamicObject;
 
 @CoreModule("Truffle::Graal")
 public abstract class TruffleGraalNodes {
@@ -44,30 +48,65 @@ public abstract class TruffleGraalNodes {
     public abstract static class AlwaysSplitNode extends CoreMethodArrayArgumentsNode {
 
         @TruffleBoundary
-        @Specialization(guards = "isRubyMethod(rubyMethod)")
-        protected DynamicObject splitMethod(DynamicObject rubyMethod) {
+        @Specialization
+        protected RubyMethod splitMethod(RubyMethod rubyMethod) {
             if (getContext().getOptions().ALWAYS_SPLIT_HONOR) {
-                InternalMethod internalMethod = Layouts.METHOD.getMethod(rubyMethod);
-                internalMethod.getSharedMethodInfo().setAlwaysClone(true);
+                RubyRootNode rootNode = (RubyRootNode) rubyMethod.method.getCallTarget().getRootNode();
+                rootNode.setSplit(Split.ALWAYS);
             }
             return rubyMethod;
         }
 
         @TruffleBoundary
-        @Specialization(guards = "isRubyUnboundMethod(rubyMethod)")
-        protected DynamicObject splitUnboundMethod(DynamicObject rubyMethod) {
+        @Specialization
+        protected RubyUnboundMethod splitUnboundMethod(RubyUnboundMethod rubyMethod) {
             if (getContext().getOptions().ALWAYS_SPLIT_HONOR) {
-                InternalMethod internalMethod = Layouts.UNBOUND_METHOD.getMethod(rubyMethod);
-                internalMethod.getSharedMethodInfo().setAlwaysClone(true);
+                RubyRootNode rootNode = (RubyRootNode) rubyMethod.method.getCallTarget().getRootNode();
+                rootNode.setSplit(Split.ALWAYS);
             }
             return rubyMethod;
         }
 
         @TruffleBoundary
-        @Specialization(guards = "isRubyProc(rubyProc)")
-        protected DynamicObject splitProc(DynamicObject rubyProc) {
+        @Specialization
+        protected RubyProc splitProc(RubyProc rubyProc) {
             if (getContext().getOptions().ALWAYS_SPLIT_HONOR) {
-                Layouts.PROC.getSharedMethodInfo(rubyProc).setAlwaysClone(true);
+                ((RubyRootNode) rubyProc.callTargetForType.getRootNode()).setSplit(Split.ALWAYS);
+                ((RubyRootNode) rubyProc.callTargetForLambdas.getRootNode()).setSplit(Split.ALWAYS);
+            }
+            return rubyProc;
+        }
+    }
+
+    @CoreMethod(names = "never_split", onSingleton = true, required = 1, argumentNames = "method_or_proc")
+    public abstract static class NeverSplitNode extends CoreMethodArrayArgumentsNode {
+
+        @TruffleBoundary
+        @Specialization
+        protected RubyMethod neverSplitMethod(RubyMethod rubyMethod) {
+            if (getContext().getOptions().NEVER_SPLIT_HONOR) {
+                RubyRootNode rootNode = (RubyRootNode) rubyMethod.method.getCallTarget().getRootNode();
+                rootNode.setSplit(Split.NEVER);
+            }
+            return rubyMethod;
+        }
+
+        @TruffleBoundary
+        @Specialization
+        protected RubyUnboundMethod neverSplitUnboundMethod(RubyUnboundMethod rubyMethod) {
+            if (getContext().getOptions().NEVER_SPLIT_HONOR) {
+                RubyRootNode rootNode = (RubyRootNode) rubyMethod.method.getCallTarget().getRootNode();
+                rootNode.setSplit(Split.NEVER);
+            }
+            return rubyMethod;
+        }
+
+        @TruffleBoundary
+        @Specialization
+        protected RubyProc neverSplitProc(RubyProc rubyProc) {
+            if (getContext().getOptions().NEVER_SPLIT_HONOR) {
+                ((RubyRootNode) rubyProc.callTargetForType.getRootNode()).setSplit(Split.NEVER);
+                ((RubyRootNode) rubyProc.callTargetForLambdas.getRootNode()).setSplit(Split.NEVER);
             }
             return rubyProc;
         }
@@ -84,13 +123,9 @@ public abstract class TruffleGraalNodes {
     public abstract static class CopyCapturedLocalsNode extends CoreMethodArrayArgumentsNode {
 
         @TruffleBoundary
-        @Specialization(guards = "isRubyProc(proc)")
-        protected DynamicObject copyCapturedLocals(DynamicObject proc) {
-            final MaterializedFrame declarationFrame = Layouts.PROC.getDeclarationFrame(proc);
-
-            final RootCallTarget callTarget = Layouts.PROC.getCallTargetForType(proc);
-            final RubyRootNode rootNode = (RubyRootNode) callTarget.getRootNode();
-
+        @Specialization
+        protected RubyProc copyCapturedLocals(RubyProc proc) {
+            final RubyRootNode rootNode = (RubyRootNode) proc.callTargetForType.getRootNode();
             final RubyNode newBody = NodeUtil.cloneNode(rootNode.getBody());
 
             assert NodeUtil.findAllNodeInstances(newBody, WriteDeclarationVariableNode.class).isEmpty();
@@ -98,7 +133,7 @@ public abstract class TruffleGraalNodes {
             for (ReadDeclarationVariableNode readNode : NodeUtil
                     .findAllNodeInstances(newBody, ReadDeclarationVariableNode.class)) {
                 MaterializedFrame frame = RubyArguments
-                        .getDeclarationFrame(declarationFrame, readNode.getFrameDepth() - 1);
+                        .getDeclarationFrame(proc.declarationFrame, readNode.getFrameDepth() - 1);
                 Object value = frame.getValue(readNode.getFrameSlot());
                 readNode.replace(new ObjectLiteralNode(value));
             }
@@ -108,34 +143,49 @@ public abstract class TruffleGraalNodes {
                     rootNode.getFrameDescriptor(),
                     rootNode.getSharedMethodInfo(),
                     newBody,
-                    true);
+                    Split.HEURISTIC);
             final RootCallTarget newCallTarget = Truffle.getRuntime().createCallTarget(newRootNode);
 
-            final RootCallTarget callTargetForLambdas;
-            if (Layouts.PROC.getType(proc) == ProcType.LAMBDA) {
-                callTargetForLambdas = newCallTarget;
-            } else {
-                callTargetForLambdas = Layouts.PROC.getCallTargetForLambdas(proc);
-            }
+            final RootCallTarget callTargetForLambdas = proc.type == ProcType.LAMBDA
+                    ? newCallTarget
+                    : proc.callTargetForLambdas;
+
+            SpecialVariableStorage storage = proc.declarationStorage;
 
             final Object[] args = RubyArguments
-                    .pack(null, null, RubyArguments.getMethod(declarationFrame), null, nil, null, EMPTY_ARGUMENTS);
+                    .pack(
+                            null,
+                            null,
+                            null,
+                            RubyArguments.getMethod(proc.declarationFrame),
+                            null,
+                            nil,
+                            null,
+                            EMPTY_ARGUMENTS);
+
             // The Proc no longer needs the original declaration frame. However, all procs must have a
             // declaration frame (to allow Proc#binding) so we shall create an empty one.
             final MaterializedFrame newDeclarationFrame = Truffle
                     .getRuntime()
-                    .createMaterializedFrame(args, coreLibrary().emptyDescriptor);
+                    .createMaterializedFrame(args, coreLibrary().emptyDeclarationDescriptor);
 
-            return coreLibrary().procFactory.newInstance(Layouts.PROC.build(
-                    Layouts.PROC.getType(proc),
-                    Layouts.PROC.getSharedMethodInfo(proc),
+            newDeclarationFrame.setObject(coreLibrary().emptyDeclarationSpecialVariableSlot, storage);
+
+            return new RubyProc(
+                    coreLibrary().procClass,
+                    RubyLanguage.procShape,
+                    proc.type,
+                    proc.sharedMethodInfo,
                     newCallTarget,
                     callTargetForLambdas,
                     newDeclarationFrame,
-                    Layouts.PROC.getMethod(proc),
-                    Layouts.PROC.getBlock(proc),
-                    Layouts.PROC.getFrameOnStackMarker(proc),
-                    Layouts.PROC.getDeclarationContext(proc)));
+                    storage,
+                    proc.method,
+                    proc.block,
+                    proc.frameOnStackMarker,
+                    proc.declarationContext);
+
+            // TODO(norswap): trace allocation?
         }
 
     }
@@ -181,8 +231,8 @@ public abstract class TruffleGraalNodes {
     @NodeChild(value = "value", type = RubyNode.class)
     public abstract static class BailoutNode extends PrimitiveNode {
 
-        @Specialization(guards = "isRubyString(message)")
-        protected Object bailout(DynamicObject message,
+        @Specialization
+        protected Object bailout(RubyString message,
                 @Cached ToJavaStringNode toJavaStringNode) {
             CompilerDirectives.bailout(toJavaStringNode.executeToJavaString(message));
             return nil;

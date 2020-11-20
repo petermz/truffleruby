@@ -9,8 +9,11 @@
  */
 package org.truffleruby.language.methods;
 
+import org.truffleruby.RubyLanguage;
+import org.truffleruby.core.kernel.TruffleKernelNodes.GetSpecialVariableStorage;
 import org.truffleruby.core.proc.ProcOperations;
 import org.truffleruby.core.proc.ProcType;
+import org.truffleruby.core.proc.RubyProc;
 import org.truffleruby.language.RubyContextSourceNode;
 import org.truffleruby.language.arguments.RubyArguments;
 import org.truffleruby.language.control.BreakID;
@@ -39,6 +42,7 @@ public class BlockDefinitionNode extends RubyContextSourceNode {
     private final BreakID breakID;
 
     @Child private ReadFrameSlotNode readFrameOnStackMarkerNode;
+    @Child private GetSpecialVariableStorage readSpecialVariableStorageNode;
     @Child private WithoutVisibilityNode withoutVisibilityNode;
 
     public BlockDefinitionNode(
@@ -60,6 +64,7 @@ public class BlockDefinitionNode extends RubyContextSourceNode {
         } else {
             readFrameOnStackMarkerNode = ReadFrameSlotNodeGen.create(frameOnStackMarkerSlot);
         }
+        readSpecialVariableStorageNode = GetSpecialVariableStorage.create();
     }
 
     public BreakID getBreakID() {
@@ -67,7 +72,7 @@ public class BlockDefinitionNode extends RubyContextSourceNode {
     }
 
     @Override
-    public Object execute(VirtualFrame frame) {
+    public RubyProc execute(VirtualFrame frame) {
         final FrameOnStackMarker frameOnStackMarker;
 
         if (readFrameOnStackMarkerNode == null) {
@@ -83,12 +88,14 @@ public class BlockDefinitionNode extends RubyContextSourceNode {
         }
 
         return ProcOperations.createRubyProc(
-                coreLibrary().procFactory,
+                coreLibrary().procClass,
+                RubyLanguage.procShape,
                 type,
                 sharedMethodInfo,
                 callTargetForProcs,
                 callTargetForLambdas,
                 frame.materialize(),
+                readSpecialVariableStorageNode.execute(frame),
                 RubyArguments.getMethod(frame),
                 RubyArguments.getBlock(frame),
                 frameOnStackMarker,

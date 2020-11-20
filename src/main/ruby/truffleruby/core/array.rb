@@ -89,7 +89,7 @@ class Array
 
     total = other.size
 
-    Thread.detect_recursion self, other do
+    Truffle::ThreadOperations.detect_pair_recursion self, other do
       i = 0
       count = Primitive.min(total, size)
 
@@ -132,7 +132,7 @@ class Array
 
     return false unless size == other.size
 
-    Thread.detect_recursion self, other do
+    Truffle::ThreadOperations.detect_pair_recursion self, other do
       i = 0
       total = size
 
@@ -325,7 +325,7 @@ class Array
     return false unless other.kind_of?(Array)
     return false if size != other.size
 
-    Thread.detect_recursion self, other do
+    Truffle::ThreadOperations.detect_pair_recursion self, other do
       i = 0
       each do |x|
         return false unless x.eql? other[i]
@@ -444,7 +444,7 @@ class Array
     return self.dup if level == 0
 
     out = self.class.allocate # new_reserved size
-    recursively_flatten(self, out, level)
+    Primitive.array_flatten_helper(self, out, level)
     Primitive.infect(out, self)
     out
   end
@@ -456,7 +456,7 @@ class Array
     return nil if level == 0
 
     out = self.class.allocate # new_reserved size
-    if recursively_flatten(self, out, level)
+    if Primitive.array_flatten_helper(self, out, level)
       Primitive.steal_array_storage(self, out)
       return self
     end
@@ -477,14 +477,14 @@ class Array
     # refactoring against the original.
 
     id = object_id
-    objects = Thread.current.recursive_objects
+    objects = Primitive.thread_recursive_objects
 
     # If there is already an our version running...
     if objects.key? :__detect_outermost_recursion__
 
       # If we've seen self, unwind back to the outer version
       if objects.key? id
-        raise Thread::InnerRecursionDetected
+        raise Truffle::ThreadOperations::InnerRecursionDetected
       end
 
       # .. or compute the hash value like normal
@@ -508,7 +508,7 @@ class Array
         # An inner version will raise to return back here, indicating that
         # the whole structure is recursive. In which case, abandon most of
         # the work and return a simple hash value.
-      rescue Thread::InnerRecursionDetected
+      rescue Truffle::ThreadOperations::InnerRecursionDetected
         return size
       ensure
         objects.delete :__detect_outermost_recursion__
@@ -549,7 +549,7 @@ class Array
     comma = ', '
     result = +'['
 
-    return +'[...]' if Thread.detect_recursion self do
+    return +'[...]' if Truffle::ThreadOperations.detect_recursion self do
       each_with_index do |element, index|
         temp = Truffle::Type.rb_inspect(element)
         result.force_encoding(temp.encoding) if index == 0
@@ -568,7 +568,7 @@ class Array
     return ''.encode(Encoding::US_ASCII) if size == 0
 
     out = +''
-    raise ArgumentError, 'recursive array join' if Thread.detect_recursion self do
+    raise ArgumentError, 'recursive array join' if Truffle::ThreadOperations.detect_recursion self do
       sep = Primitive.nil?(sep) ? $, : StringValue(sep)
 
       # We've manually unwound the first loop entry for performance
@@ -1250,44 +1250,6 @@ class Array
       out
     end
   end
-
-  # Helper to recurse through flattening since the method
-  # is not allowed to recurse itself. Detects recursive structures.
-  def recursively_flatten(array, out, max_levels = -1)
-    modified = false
-
-    # Strict equality since < 0 means 'infinite'
-    if max_levels == 0
-      out.concat(array)
-      return false
-    end
-
-    max_levels -= 1
-    recursion = Thread.detect_recursion(array) do
-      array = Truffle::Type.coerce_to(array, Array, :to_ary)
-
-      i = 0
-      size = array.size
-
-      while i < size
-        o = array.at i
-
-        tmp = Truffle::Type.rb_check_convert_type(o, Array, :to_ary)
-        if Primitive.nil? tmp
-          out << o
-        else
-          modified = true
-          recursively_flatten tmp, out, max_levels
-        end
-
-        i += 1
-      end
-    end
-
-    raise ArgumentError, 'tried to flatten recursive array' if recursion
-    modified
-  end
-  private :recursively_flatten
 
   private def sort_fallback(&block)
     # Use this instead of #dup as we want an instance of Array

@@ -9,7 +9,6 @@
  */
 package org.truffleruby.core.array;
 
-import org.truffleruby.Layouts;
 import org.truffleruby.language.RubyContextSourceNode;
 import org.truffleruby.language.RubyNode;
 
@@ -17,7 +16,6 @@ import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.ImportStatic;
 import com.oracle.truffle.api.dsl.NodeChild;
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.ConditionProfile;
 
 @NodeChild(value = "array", type = RubyNode.class)
@@ -35,10 +33,10 @@ public abstract class ArraySliceNode extends RubyContextSourceNode {
     }
 
     @Specialization
-    protected DynamicObject readInBounds(DynamicObject array,
+    protected RubyArray readInBounds(RubyArray array,
             @Cached ArrayCopyOnWriteNode cowNode,
             @Cached ConditionProfile emptyArray) {
-        final int length = Layouts.ARRAY.getSize(array) + to - from;
+        final int length = array.size + to - from;
 
         if (emptyArray.profile(length <= 0)) {
             return ArrayHelpers.createEmptyArray(getContext());

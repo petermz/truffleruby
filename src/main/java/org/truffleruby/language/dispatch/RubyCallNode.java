@@ -16,23 +16,26 @@ import org.truffleruby.core.cast.BooleanCastNode;
 import org.truffleruby.core.cast.BooleanCastNodeGen;
 import org.truffleruby.core.cast.ProcOrNullNode;
 import org.truffleruby.core.cast.ProcOrNullNodeGen;
-import org.truffleruby.core.module.ModuleOperations;
+import org.truffleruby.core.proc.RubyProc;
 import org.truffleruby.core.symbol.RubySymbol;
 import org.truffleruby.language.RubyBaseNode;
 import org.truffleruby.language.RubyContextSourceNode;
 import org.truffleruby.language.RubyNode;
-import org.truffleruby.language.arguments.RubyArguments;
 import org.truffleruby.language.methods.BlockDefinitionNode;
-import org.truffleruby.language.methods.DeclarationContext;
 import org.truffleruby.language.methods.InternalMethod;
 
 import com.oracle.truffle.api.CompilerDirectives;
-import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.nodes.ExplodeLoop;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.BranchProfile;
 import com.oracle.truffle.api.profiles.ConditionProfile;
+import org.truffleruby.language.methods.LookupMethodOnSelfNode;
+
+import java.util.Map;
+
+import static org.truffleruby.language.dispatch.DispatchConfiguration.PRIVATE;
+import static org.truffleruby.language.dispatch.DispatchConfiguration.PRIVATE_RETURN_MISSING;
+import static org.truffleruby.language.dispatch.DispatchConfiguration.PROTECTED;
 
 public class RubyCallNode extends RubyContextSourceNode {
 
@@ -44,12 +47,12 @@ public class RubyCallNode extends RubyContextSourceNode {
     @Children private final RubyNode[] arguments;
 
     private final boolean isSplatted;
-    private final boolean ignoreVisibility;
+    private final DispatchConfiguration dispatchConfig;
     private final boolean isVCall;
     private final boolean isSafeNavigation;
     private final boolean isAttrAssign;
 
-    @Child private CallDispatchHeadNode dispatchHead;
+    @Child private DispatchNode dispatch;
     @Child private ArrayToObjectArrayNode toObjectArrayNode;
     @Child private DefinedNode definedNode;
 
@@ -69,7 +72,7 @@ public class RubyCallNode extends RubyContextSourceNode {
         }
 
         this.isSplatted = parameters.isSplatted();
-        this.ignoreVisibility = parameters.isIgnoreVisibility();
+        this.dispatchConfig = parameters.isIgnoreVisibility() ? PRIVATE : PROTECTED;
         this.isVCall = parameters.isVCall();
         this.isSafeNavigation = parameters.isSafeNavigation();
         this.isAttrAssign = parameters.isAttrAssign();
@@ -93,7 +96,7 @@ public class RubyCallNode extends RubyContextSourceNode {
 
         final Object[] executedArguments = executeArguments(frame);
 
-        final DynamicObject blockObject = executeBlock(frame);
+        final RubyProc blockObject = executeBlock(frame);
 
         // The expansion of the splat is done after executing the block, for m(*args, &args.pop)
         final Object[] argumentsObjects;
@@ -106,15 +109,14 @@ public class RubyCallNode extends RubyContextSourceNode {
         return executeWithArgumentsEvaluated(frame, receiverObject, blockObject, argumentsObjects);
     }
 
-    public Object executeWithArgumentsEvaluated(VirtualFrame frame, Object receiverObject, DynamicObject blockObject,
+    public Object executeWithArgumentsEvaluated(VirtualFrame frame, Object receiverObject, RubyProc blockObject,
             Object[] argumentsObjects) {
-        if (dispatchHead == null) {
+        if (dispatch == null) {
             CompilerDirectives.transferToInterpreterAndInvalidate();
-            dispatchHead = insert(
-                    new CallDispatchHeadNode(ignoreVisibility, false, MissingBehavior.CALL_METHOD_MISSING));
+            dispatch = insert(DispatchNode.create(dispatchConfig));
         }
 
-        final Object returnValue = dispatchHead
+        final Object returnValue = dispatch
                 .dispatch(frame, receiverObject, methodName, blockObject, argumentsObjects);
         if (isAttrAssign) {
             return argumentsObjects[argumentsObjects.length - 1];
@@ -123,7 +125,7 @@ public class RubyCallNode extends RubyContextSourceNode {
         }
     }
 
-    private DynamicObject executeBlock(VirtualFrame frame) {
+    private RubyProc executeBlock(VirtualFrame frame) {
         if (block != null) {
             return block.executeProcOrNull(frame);
         } else {
@@ -173,23 +175,28 @@ public class RubyCallNode extends RubyContextSourceNode {
         return hasLiteralBlock;
     }
 
+    @Override
+    public Map<String, Object> getDebugProperties() {
+        final Map<String, Object> map = super.getDebugProperties();
+        map.put("methodName", methodName);
+        return map;
+    }
+
     private class DefinedNode extends RubyBaseNode {
 
         private final RubySymbol methodNameSymbol = getContext().getSymbol(methodName);
 
-        @Child private CallDispatchHeadNode respondToMissing = CallDispatchHeadNode.createReturnMissing();
+        @Child private DispatchNode respondToMissing = DispatchNode.create(PRIVATE_RETURN_MISSING);
         @Child private BooleanCastNode respondToMissingCast = BooleanCastNodeGen.create(null);
 
-        // TODO CS-10-Apr-17 see below
-        // @Child private LookupMethodNode lookupMethodNode = LookupMethodNodeGen.create(ignoreVisibility, false, null, null);
+
+        @Child private LookupMethodOnSelfNode lookupMethodNode = LookupMethodOnSelfNode.create();
 
         private final ConditionProfile receiverDefinedProfile = ConditionProfile.create();
         private final BranchProfile argumentNotDefinedProfile = BranchProfile.create();
         private final BranchProfile allArgumentsDefinedProfile = BranchProfile.create();
         private final BranchProfile receiverExceptionProfile = BranchProfile.create();
         private final ConditionProfile methodNotFoundProfile = ConditionProfile.create();
-        private final ConditionProfile methodUndefinedProfile = ConditionProfile.create();
-        private final ConditionProfile methodNotVisibleProfile = ConditionProfile.create();
 
         @ExplodeLoop
         public Object isDefined(VirtualFrame frame, RubyContext context) {
@@ -215,9 +222,7 @@ public class RubyCallNode extends RubyContextSourceNode {
                 return nil;
             }
 
-            final DeclarationContext declarationContext = RubyArguments.getDeclarationContext(frame);
-            final InternalMethod method = doLookup(receiverObject, declarationContext);
-            final Object self = RubyArguments.getSelf(frame);
+            final InternalMethod method = lookupMethodNode.lookup(frame, receiverObject, methodName, dispatchConfig);
 
             if (methodNotFoundProfile.profile(method == null)) {
                 final Object r = respondToMissing.call(receiverObject, "respond_to_missing?", methodNameSymbol, false);
@@ -225,34 +230,9 @@ public class RubyCallNode extends RubyContextSourceNode {
                 if (r != DispatchNode.MISSING && !respondToMissingCast.executeToBoolean(r)) {
                     return nil;
                 }
-            } else if (methodUndefinedProfile.profile(method.isUndefined())) {
-                return nil;
-            } else if (methodNotVisibleProfile.profile(!ignoreVisibility && !isVisibleTo(method, self))) {
-                return nil;
             }
 
-            return coreStrings().METHOD.createInstance();
+            return coreStrings().METHOD.createInstance(context);
         }
-
-        // TODO CS-10-Apr-17 remove this boundary
-
-        @TruffleBoundary
-        private InternalMethod doLookup(Object receiverObject, DeclarationContext declarationContext) {
-            // TODO CS-10-Apr-17 I'd like to use this but it doesn't give the same result
-            // lookupMethodNode.executeLookupMethod(frame, coreLibrary().getMetaClass(receiverObject), methodName);
-
-            return ModuleOperations
-                    .lookupMethodUncached(coreLibrary().getMetaClass(receiverObject), methodName, declarationContext);
-        }
-
-        // TODO CS-10-Apr-17 remove this boundary
-
-        @TruffleBoundary
-        private boolean isVisibleTo(InternalMethod method, Object self) {
-            return method.isVisibleTo(coreLibrary().getMetaClass(self));
-        }
-
     }
-
-
 }

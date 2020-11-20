@@ -24,7 +24,7 @@
 #
 # Run with:
 #
-#   jt --env jvm-ce ruby --experimental-options --engine.TraceCompilation --engine.CompilationFailureAction=ExitVM --engine.IterativePartialEscape test.rb
+#   jt --env jvm-ce ruby --experimental-options --engine.TraceCompilation --check-compilation --engine.IterativePartialEscape --engine.MultiTier=false test.rb
 
 require_relative 'pe_harness'
 
@@ -88,6 +88,7 @@ else
   require_relative 'core/encoding_pe'
   require_relative 'interop/interop_pe'
   require_relative 'truffle/engine_pe.rb'
+  require_relative 'truffle/thread_pe.rb'
   require_relative 'macro/pushing_pixels_pe.rb'
 
   if Truffle::Interop.mime_type_supported?('application/javascript')

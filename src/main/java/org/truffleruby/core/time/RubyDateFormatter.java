@@ -64,14 +64,13 @@ import org.truffleruby.core.exception.ErrnoErrorNode;
 import org.truffleruby.core.rope.Rope;
 import org.truffleruby.core.rope.RopeBuilder;
 import org.truffleruby.core.rope.RopeOperations;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.core.string.StringOperations;
-import org.truffleruby.language.RubyGuards;
 import org.truffleruby.language.backtrace.Backtrace;
 import org.truffleruby.language.control.RaiseException;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.nodes.Node;
-import com.oracle.truffle.api.object.DynamicObject;
 
 public abstract class RubyDateFormatter {
     private static final DateFormatSymbols FORMAT_SYMBOLS = new DateFormatSymbols(Locale.US);
@@ -497,9 +496,11 @@ public abstract class RubyDateFormatter {
                         output = output.substring(0, width);
                     } else {
                         // Not enough precision, fill with 0
-                        while (output.length() < width) {
-                            output += "0";
+                        final StringBuilder outputBuilder = new StringBuilder(output);
+                        while (outputBuilder.length() < width) {
+                            outputBuilder.append('0');
                         }
+                        output = outputBuilder.toString();
                     }
                     formatter = RubyTimeOutputFormatter.DEFAULT_FORMATTER; // no more formatting
                     break;
@@ -526,7 +527,7 @@ public abstract class RubyDateFormatter {
             } catch (IndexOutOfBoundsException ioobe) {
                 final Backtrace backtrace = context.getCallStack().getBacktrace(currentNode);
                 final Rope messageRope = StringOperations.encodeRope("strftime", UTF8Encoding.INSTANCE);
-                final DynamicObject message = StringOperations.createString(context, messageRope);
+                final RubyString message = StringOperations.createString(context, messageRope);
                 throw new RaiseException(
                         context,
                         errnoErrorNode.execute(context.getCoreLibrary().getErrnoValue("ERANGE"), message, backtrace));
@@ -617,8 +618,8 @@ public abstract class RubyDateFormatter {
     }
 
     private static String getRubyTimeZoneName(ZonedDateTime dt, Object zone) {
-        if (RubyGuards.isRubyString(zone)) {
-            return StringOperations.getString((DynamicObject) zone);
+        if (zone instanceof RubyString) {
+            return ((RubyString) zone).getJavaString();
         } else {
             return "";
         }

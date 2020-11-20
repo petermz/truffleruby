@@ -9,34 +9,39 @@
  */
 package org.truffleruby.core.hash;
 
-import java.util.Collections;
-import java.util.Iterator;
-
-import com.oracle.truffle.api.CompilerDirectives;
-import org.truffleruby.Layouts;
+import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import org.truffleruby.RubyContext;
-import org.truffleruby.collections.BoundaryIterable;
+import org.truffleruby.RubyLanguage;
+import org.truffleruby.core.numeric.BigIntegerOps;
+import org.truffleruby.core.numeric.RubyBignum;
 import org.truffleruby.core.string.StringUtils;
 import org.truffleruby.language.Nil;
-import org.truffleruby.language.RubyGuards;
+import org.truffleruby.language.RubyBaseNode;
 import org.truffleruby.language.objects.shared.SharedObjects;
-
-import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
-import com.oracle.truffle.api.object.DynamicObject;
 
 public abstract class HashOperations {
 
-    public static DynamicObject newEmptyHash(RubyContext context) {
+    public static RubyHash newEmptyHash(RubyContext context) {
         final Object nil = Nil.INSTANCE;
-        return context.getCoreLibrary().hashFactory.newInstance(
-                Layouts.HASH.build(null, 0, null, null, nil, nil, false));
+        return new RubyHash(
+                context.getCoreLibrary().hashClass,
+                RubyLanguage.hashShape,
+                context,
+                null,
+                0,
+                null,
+                null,
+                nil,
+                nil,
+                false);
     }
 
-    public static boolean verifyStore(RubyContext context, DynamicObject hash) {
-        final Object store = Layouts.HASH.getStore(hash);
-        final int size = Layouts.HASH.getSize(hash);
-        final Entry firstInSequence = Layouts.HASH.getFirstInSequence(hash);
-        final Entry lastInSequence = Layouts.HASH.getLastInSequence(hash);
+    @TruffleBoundary
+    public static boolean verifyStore(RubyContext context, RubyHash hash) {
+        final Object store = hash.store;
+        final int size = hash.size;
+        final Entry firstInSequence = hash.firstInSequence;
+        final Entry lastInSequence = hash.lastInSequence;
 
         assert store == null || store.getClass() == Object[].class || store instanceof Entry[];
 
@@ -58,11 +63,9 @@ public abstract class HashOperations {
 
                 while (entry != null) {
                     assert SharedObjects.assertPropagateSharing(
-                            context,
                             hash,
                             entry.getKey()) : "unshared key in shared Hash: " + entry.getKey();
                     assert SharedObjects.assertPropagateSharing(
-                            context,
                             hash,
                             entry.getValue()) : "unshared value in shared Hash: " + entry.getValue();
 
@@ -105,7 +108,7 @@ public abstract class HashOperations {
 
             assert foundSizeSequence == size : StringUtils.format("%d %d", foundSizeSequence, size);
         } else if (store.getClass() == Object[].class) {
-            assert ((Object[]) store).length == context.getOptions().HASH_PACKED_ARRAY_MAX *
+            assert ((Object[]) store).length == context.getLanguageSlow().options.HASH_PACKED_ARRAY_MAX *
                     PackedArrayStrategy.ELEMENTS_PER_ENTRY : ((Object[]) store).length;
 
             final Object[] packedStore = (Object[]) store;
@@ -118,8 +121,8 @@ public abstract class HashOperations {
                 final Object key = PackedArrayStrategy.getKey(packedStore, n);
                 final Object value = PackedArrayStrategy.getValue(packedStore, n);
 
-                assert SharedObjects.assertPropagateSharing(context, hash, key) : "unshared key in shared Hash: " + key;
-                assert SharedObjects.assertPropagateSharing(context, hash, value) : "unshared value in shared Hash: " +
+                assert SharedObjects.assertPropagateSharing(hash, key) : "unshared key in shared Hash: " + key;
+                assert SharedObjects.assertPropagateSharing(hash, value) : "unshared value in shared Hash: " +
                         value;
             }
 
@@ -130,27 +133,25 @@ public abstract class HashOperations {
         return true;
     }
 
-    @TruffleBoundary
-    public static Iterator<KeyValue> iterateKeyValues(DynamicObject hash) {
-        assert RubyGuards.isRubyHash(hash);
+    // random number, stops hashes for similar values but different classes being the same, static because we want deterministic hashes
+    public static final int BOOLEAN_CLASS_SALT = 55927484;
+    public static final int INTEGER_CLASS_SALT = 1028093337;
+    public static final int DOUBLE_CLASS_SALT = -1611229937;
 
-        if (HashGuards.isNullHash(hash)) {
-            return Collections.emptyIterator();
-        } else if (HashGuards.isPackedHash(hash)) {
-            return PackedArrayStrategy
-                    .iterateKeyValues((Object[]) Layouts.HASH.getStore(hash), Layouts.HASH.getSize(hash));
-        } else if (HashGuards.isBucketHash(hash)) {
-            return BucketsStrategy.iterateKeyValues(Layouts.HASH.getFirstInSequence(hash));
-        } else {
-            throw CompilerDirectives.shouldNotReachHere();
-        }
+    public static long hashBoolean(boolean value, RubyContext context, RubyBaseNode node) {
+        return context.getHashing(node).hash(BOOLEAN_CLASS_SALT, Boolean.hashCode(value));
     }
 
-    @TruffleBoundary
-    public static BoundaryIterable<KeyValue> iterableKeyValues(final DynamicObject hash) {
-        assert RubyGuards.isRubyHash(hash);
+    public static long hashLong(long value, RubyContext context, RubyBaseNode node) {
+        return context.getHashing(node).hash(INTEGER_CLASS_SALT, value);
+    }
 
-        return BoundaryIterable.wrap(() -> iterateKeyValues(hash));
+    public static long hashDouble(double value, RubyContext context, RubyBaseNode node) {
+        return context.getHashing(node).hash(DOUBLE_CLASS_SALT, Double.doubleToRawLongBits(value));
+    }
+
+    public static long hashBignum(RubyBignum value, RubyContext context, RubyBaseNode node) {
+        return context.getHashing(node).hash(INTEGER_CLASS_SALT, BigIntegerOps.hashCode(value));
     }
 
 }

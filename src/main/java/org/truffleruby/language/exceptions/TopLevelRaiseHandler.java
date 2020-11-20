@@ -9,38 +9,30 @@
  */
 package org.truffleruby.language.exceptions;
 
-import org.truffleruby.Layouts;
-import org.truffleruby.core.cast.IntegerCastNode;
+import com.oracle.truffle.api.object.DynamicObjectLibrary;
+import org.truffleruby.core.cast.IntegerCastNodeGen;
+import org.truffleruby.core.exception.RubyException;
 import org.truffleruby.core.kernel.AtExitManager;
-import org.truffleruby.language.RubyContextSourceNode;
-import org.truffleruby.language.RubyNode;
+import org.truffleruby.core.thread.GetCurrentRubyThreadNode;
+import org.truffleruby.language.RubyContextNode;
 import org.truffleruby.language.control.ExitException;
 import org.truffleruby.language.control.RaiseException;
-import org.truffleruby.language.dispatch.CallDispatchHeadNode;
-import org.truffleruby.language.objects.ReadObjectFieldNodeGen;
+import org.truffleruby.language.dispatch.DispatchNode;
 
 import com.oracle.truffle.api.CompilerDirectives;
-import com.oracle.truffle.api.frame.VirtualFrame;
-import com.oracle.truffle.api.object.DynamicObject;
+import org.truffleruby.language.objects.IsANodeGen;
 
-public class TopLevelRaiseHandler extends RubyContextSourceNode {
+public class TopLevelRaiseHandler extends RubyContextNode {
 
-    @Child private RubyNode body;
-    @Child private IntegerCastNode integerCastNode;
-    @Child private SetExceptionVariableNode setExceptionVariableNode;
+    @Child private GetCurrentRubyThreadNode getCurrentRubyThreadNode;
 
-    public TopLevelRaiseHandler(RubyNode body) {
-        this.body = body;
-    }
-
-    @Override
-    public Object execute(VirtualFrame frame) {
+    public int execute(Runnable body) {
         int exitCode = 0;
-        DynamicObject caughtException = null;
+        RubyException caughtException = null;
 
         // Execute the main script
         try {
-            body.execute(frame);
+            body.run();
         } catch (RaiseException e) {
             caughtException = e.getException();
             exitCode = statusFromException(caughtException);
@@ -53,14 +45,17 @@ public class TopLevelRaiseHandler extends RubyContextSourceNode {
 
         // Execute at_exit hooks (except if hard #exit!)
         try {
-            DynamicObject atExitException = getContext().getAtExitManager().runAtExitHooks();
+            RubyException atExitException = getContext().getAtExitManager().runAtExitHooks();
             if (atExitException != null) {
                 exitCode = statusFromException(atExitException);
             }
 
             if (caughtException != null) {
                 // print the main script exception now
-                AtExitManager.handleAtExitException(getContext(), caughtException);
+                if (!AtExitManager.isSilentException(getContext(), caughtException)) {
+                    getContext().getDefaultBacktraceFormatter().printTopLevelRubyExceptionOnEnvStderr(caughtException);
+                }
+
                 handleSignalException(caughtException);
             }
         } catch (ExitException e) {
@@ -71,36 +66,28 @@ public class TopLevelRaiseHandler extends RubyContextSourceNode {
         return exitCode;
     }
 
-    private int statusFromException(DynamicObject exception) {
-        if (Layouts.BASIC_OBJECT.getLogicalClass(exception) == coreLibrary().systemExitClass) {
-            return castToInt(ReadObjectFieldNodeGen.getUncached().execute(exception, "@status", null));
+    private int statusFromException(RubyException exception) {
+        if (IsANodeGen.getUncached().executeIsA(exception, coreLibrary().systemExitClass)) {
+            final Object status = DynamicObjectLibrary.getUncached().getOrDefault(exception, "@status", null);
+            return IntegerCastNodeGen.getUncached().executeCastInt(status);
         } else {
             return 1;
         }
     }
 
-    private int castToInt(Object value) {
-        if (integerCastNode == null) {
+    private void setLastException(RubyException exception) {
+        if (getCurrentRubyThreadNode == null) {
             CompilerDirectives.transferToInterpreterAndInvalidate();
-            integerCastNode = insert(IntegerCastNode.create());
+            getCurrentRubyThreadNode = insert(GetCurrentRubyThreadNode.create());
         }
 
-        return integerCastNode.executeCastInt(value);
+        getCurrentRubyThreadNode.execute().threadLocalGlobals.exception = exception;
     }
 
-    public void setLastException(DynamicObject exception) {
-        if (setExceptionVariableNode == null) {
-            CompilerDirectives.transferToInterpreterAndInvalidate();
-            setExceptionVariableNode = insert(new SetExceptionVariableNode());
-        }
-
-        setExceptionVariableNode.setLastException(exception);
-    }
-
-    private void handleSignalException(DynamicObject exception) {
-        if (Layouts.BASIC_OBJECT.getLogicalClass(exception) == coreLibrary().signalExceptionClass) {
+    private void handleSignalException(RubyException exception) {
+        if (exception.getLogicalClass() == coreLibrary().signalExceptionClass) {
             // Calls raise(3) or no-op
-            CallDispatchHeadNode.getUncached().call(exception, "reached_top_level");
+            DispatchNode.getUncached().call(exception, "reached_top_level");
         }
     }
 

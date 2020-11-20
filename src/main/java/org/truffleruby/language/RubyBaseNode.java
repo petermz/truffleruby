@@ -11,6 +11,7 @@ package org.truffleruby.language;
 
 import com.oracle.truffle.api.dsl.ImportStatic;
 import com.oracle.truffle.api.dsl.TypeSystemReference;
+import com.oracle.truffle.api.nodes.LoopNode;
 import com.oracle.truffle.api.nodes.Node;
 import org.truffleruby.core.array.ArrayUtils;
 
@@ -21,6 +22,11 @@ public abstract class RubyBaseNode extends Node {
 
     public static final Object[] EMPTY_ARGUMENTS = ArrayUtils.EMPTY_ARRAY;
 
-    public static final Object nil = Nil.INSTANCE;
+    public static final Nil nil = Nil.INSTANCE;
+
+    public void reportLongLoopCount(long count) {
+        assert count >= 0L;
+        LoopNode.reportLoopCount(this, count > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) count);
+    }
 
 }

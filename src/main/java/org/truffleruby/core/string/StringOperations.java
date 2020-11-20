@@ -39,28 +39,52 @@ import java.nio.charset.Charset;
 
 import org.jcodings.Encoding;
 import org.jcodings.specific.ASCIIEncoding;
-import org.truffleruby.Layouts;
 import org.truffleruby.RubyContext;
+import org.truffleruby.RubyLanguage;
 import org.truffleruby.core.array.ArrayOperations;
 import org.truffleruby.core.rope.CodeRange;
 import org.truffleruby.core.rope.Rope;
 import org.truffleruby.core.rope.RopeOperations;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
-import com.oracle.truffle.api.object.DynamicObject;
+import org.truffleruby.language.RubyContextSourceNode;
+import org.truffleruby.language.objects.AllocateHelperNode;
 
 public abstract class StringOperations {
 
-    public static DynamicObject createString(RubyContext context, Rope rope) {
-        return context.getCoreLibrary().stringFactory.newInstance(Layouts.STRING.build(false, false, rope));
+    public static RubyString createString(RubyLanguage language, RubyContext context,
+            AllocateHelperNode allocateHelperNode,
+            RubyContextSourceNode rubyContextSourceNode, Rope rope) {
+        final RubyString instance = new RubyString(
+                context.getCoreLibrary().stringClass,
+                RubyLanguage.stringShape,
+                false,
+                false,
+                rope);
+        allocateHelperNode.trace(instance, rubyContextSourceNode, language);
+        return instance;
     }
 
-    public static DynamicObject createFrozenString(RubyContext context, Rope rope) {
-        return context.getCoreLibrary().stringFactory.newInstance(Layouts.STRING.build(true, false, rope));
+    // TODO BJF Aug-3-2020 Trace more allocations of RubyString
+    public static RubyString createString(RubyContext context, Rope rope) {
+        final RubyString instance = new RubyString(
+                context.getCoreLibrary().stringClass,
+                RubyLanguage.stringShape,
+                false,
+                false,
+                rope);
+        return instance;
     }
 
-    public static String getString(DynamicObject string) {
-        return RopeOperations.decodeRope(StringOperations.rope(string));
+    // TODO BJF Aug-3-2020 Trace more allocations of RubyString
+    public static RubyString createFrozenString(RubyContext context, Rope rope) {
+        final RubyString instance = new RubyString(
+                context.getCoreLibrary().stringClass,
+                RubyLanguage.stringShape,
+                true,
+                false,
+                rope);
+        return instance;
     }
 
     public static int clampExclusiveIndex(int length, int index) {
@@ -105,16 +129,8 @@ public abstract class StringOperations {
         return encodeRope(value, encoding, CodeRange.CR_UNKNOWN);
     }
 
-    public static Rope rope(DynamicObject string) {
-        return Layouts.STRING.getRope(string);
-    }
-
-    public static void setRope(DynamicObject string, Rope rope) {
-        Layouts.STRING.setRope(string, rope);
-    }
-
-    public static Encoding encoding(DynamicObject string) {
-        return rope(string).getEncoding();
+    public static void setRope(RubyString string, Rope rope) {
+        string.rope = rope;
     }
 
     public static boolean isAsciiOnly(String string) {

@@ -12,33 +12,34 @@ package org.truffleruby.core.format.convert;
 import java.util.ArrayList;
 import java.util.List;
 
+import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.library.CachedLibrary;
 import org.truffleruby.cext.CExtNodes;
 import org.truffleruby.core.format.FormatFrameDescriptor;
 import org.truffleruby.core.format.FormatNode;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.extra.ffi.Pointer;
+import org.truffleruby.language.Nil;
 import org.truffleruby.language.library.RubyLibrary;
-import org.truffleruby.language.control.JavaException;
 
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.NodeChild;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.frame.FrameSlotTypeException;
 import com.oracle.truffle.api.frame.VirtualFrame;
-import com.oracle.truffle.api.object.DynamicObject;
 
 @NodeChild("value")
 public abstract class StringToPointerNode extends FormatNode {
 
-    @Specialization(guards = "isNil(nil)")
-    protected long toPointer(Object nil) {
+    @Specialization
+    protected long toPointer(Nil nil) {
         return 0;
     }
 
     @SuppressWarnings("unchecked")
-    @Specialization(guards = "isRubyString(string)", limit = "getRubyLibraryCacheLimit()")
-    protected long toPointer(VirtualFrame frame, DynamicObject string,
+    @Specialization(limit = "getRubyLibraryCacheLimit()")
+    protected long toPointer(VirtualFrame frame, RubyString string,
             @Cached CExtNodes.StringToNativeNode stringToNativeNode,
             @CachedLibrary("string") RubyLibrary rubyLibrary) {
         rubyLibrary.taint(string);
@@ -50,7 +51,7 @@ public abstract class StringToPointerNode extends FormatNode {
         try {
             associated = (List<Pointer>) frame.getObject(FormatFrameDescriptor.ASSOCIATED_SLOT);
         } catch (FrameSlotTypeException e) {
-            throw new JavaException(e);
+            throw CompilerDirectives.shouldNotReachHere(e);
         }
 
         if (associated == null) {

@@ -294,7 +294,7 @@ module Truffle
           next
         end
 
-        Truffle::IOOperations.set_last_line(line, Primitive.caller_binding) if line
+        Primitive.io_last_line_set(Primitive.caller_special_variables, line) if line
         @last_lineno = @lineno += 1
         return line
       end

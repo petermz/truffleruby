@@ -11,12 +11,12 @@ package org.truffleruby.language;
 
 import org.truffleruby.RubyContext;
 import org.truffleruby.RubyLanguage;
+import org.truffleruby.cext.ValueWrapper;
 import org.truffleruby.interop.ForeignToRubyArgumentsNode;
 import org.truffleruby.interop.ForeignToRubyNode;
-import org.truffleruby.language.dispatch.CallDispatchHeadNode;
 import org.truffleruby.language.dispatch.DispatchNode;
-import org.truffleruby.language.dispatch.DoesRespondDispatchHeadNode;
-
+import org.truffleruby.language.dispatch.InternalRespondToNode;
+import org.truffleruby.language.library.RubyLibrary;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Cached.Exclusive;
 import com.oracle.truffle.api.dsl.Cached.Shared;
@@ -28,11 +28,71 @@ import com.oracle.truffle.api.library.ExportLibrary;
 import com.oracle.truffle.api.library.ExportMessage;
 import com.oracle.truffle.api.profiles.BranchProfile;
 
-/** A subset of messages from {@link org.truffleruby.interop.messages.RubyObjectMessages} for immutable objects. Such
- * objects have no instance variables, so the logic is simpler. We cannot easily reuse RubyObjectMessages here. */
-@ExportLibrary(value = InteropLibrary.class)
+/** A subset of messages from {@link org.truffleruby.language.RubyDynamicObject} for immutable objects. Such objects
+ * have no instance variables, so the logic is simpler. We cannot easily reuse RubyDynamicObject messages since the
+ * superclass differs. */
+@ExportLibrary(RubyLibrary.class)
+@ExportLibrary(InteropLibrary.class)
 public abstract class ImmutableRubyObject implements TruffleObject {
 
+    protected ValueWrapper valueWrapper;
+    protected long objectId;
+
+    public long getObjectId() {
+        return objectId;
+    }
+
+    public void setObjectId(long objectId) {
+        this.objectId = objectId;
+    }
+
+    public ValueWrapper getValueWrapper() {
+        return valueWrapper;
+    }
+
+    public void setValueWrapper(ValueWrapper valueWrapper) {
+        this.valueWrapper = valueWrapper;
+    }
+
+    // region RubyLibrary messages
+    @ExportMessage
+    public void freeze() {
+    }
+
+    @ExportMessage
+    public boolean isFrozen() {
+        return true;
+    }
+
+    @ExportMessage
+    public boolean isTainted() {
+        return false;
+    }
+
+    @ExportMessage
+    public void taint() {
+    }
+
+    @ExportMessage
+    public void untaint() {
+    }
+    // endregion
+
+    // region InteropLibrary messages
+    @ExportMessage
+    public boolean hasLanguage() {
+        return true;
+    }
+
+    @ExportMessage
+    public Class<RubyLanguage> getLanguage() {
+        return RubyLanguage.class;
+    }
+
+    @ExportMessage
+    public abstract String toDisplayString(boolean allowSideEffects);
+
+    // region Members
     @ExportMessage
     public boolean hasMembers() {
         return true;
@@ -41,7 +101,7 @@ public abstract class ImmutableRubyObject implements TruffleObject {
     @ExportMessage
     public Object getMembers(boolean internal,
             @CachedContext(RubyLanguage.class) RubyContext context,
-            @Exclusive @Cached CallDispatchHeadNode dispatchNode) {
+            @Exclusive @Cached DispatchNode dispatchNode) {
         return dispatchNode.call(
                 context.getCoreLibrary().truffleInteropModule,
                 // language=ruby prefix=Truffle::Interop.
@@ -52,18 +112,18 @@ public abstract class ImmutableRubyObject implements TruffleObject {
 
     @ExportMessage
     public boolean isMemberReadable(String name,
-            @Cached @Shared("definedNode") DoesRespondDispatchHeadNode definedNode) {
-        return definedNode.doesRespondTo(null, name, this);
+            @Cached @Shared("definedNode") InternalRespondToNode definedNode) {
+        return definedNode.execute(null, this, name);
     }
 
     @ExportMessage
     public Object readMember(String name,
-            @Cached @Shared("definedNode") DoesRespondDispatchHeadNode definedNode,
+            @Cached @Shared("definedNode") InternalRespondToNode definedNode,
             @Cached ForeignToRubyNode nameToRubyNode,
-            @Cached @Exclusive CallDispatchHeadNode dispatch,
+            @Cached @Exclusive DispatchNode dispatch,
             @Shared("errorProfile") @Cached BranchProfile errorProfile)
             throws UnknownIdentifierException {
-        if (definedNode.doesRespondTo(null, name, this)) {
+        if (definedNode.execute(null, this, name)) {
             Object rubyName = nameToRubyNode.executeConvert(name);
             return dispatch.call(this, "method", rubyName);
         } else {
@@ -74,13 +134,13 @@ public abstract class ImmutableRubyObject implements TruffleObject {
 
     @ExportMessage
     public boolean isMemberInvocable(String name,
-            @Cached @Shared("definedNode") DoesRespondDispatchHeadNode definedNode) {
-        return definedNode.doesRespondTo(null, name, this);
+            @Cached @Shared("definedNode") InternalRespondToNode definedNode) {
+        return definedNode.execute(null, this, name);
     }
 
     @ExportMessage
     public Object invokeMember(String name, Object[] arguments,
-            @Exclusive @Cached(parameters = "RETURN_MISSING") CallDispatchHeadNode dispatchMember,
+            @Exclusive @Cached(parameters = "PRIVATE_RETURN_MISSING") DispatchNode dispatchMember,
             @Exclusive @Cached ForeignToRubyArgumentsNode foreignToRubyArgumentsNode,
             @Shared("errorProfile") @Cached BranchProfile errorProfile)
             throws UnknownIdentifierException {
@@ -95,11 +155,13 @@ public abstract class ImmutableRubyObject implements TruffleObject {
 
     @ExportMessage
     public boolean isMemberInternal(String name,
-            @Cached @Shared("definedNode") DoesRespondDispatchHeadNode definedNode,
-            @Exclusive @Cached(parameters = "PUBLIC") DoesRespondDispatchHeadNode definedPublicNode) {
+            @Cached @Shared("definedNode") InternalRespondToNode definedNode,
+            @Exclusive @Cached(parameters = "PUBLIC") InternalRespondToNode definedPublicNode) {
         // defined but not publicly
-        return definedNode.doesRespondTo(null, name, this) &&
-                !definedPublicNode.doesRespondTo(null, name, this);
+        return definedNode.execute(null, this, name) &&
+                !definedPublicNode.execute(null, this, name);
     }
+    // endregion
+    // endregion
 
 }

@@ -41,8 +41,6 @@ DEFAULT_RECORD_SEPARATOR = "\n"
 class String
   include Comparable
 
-  Truffle::Graal.always_split(instance_method(:to_sym))
-
   private def range_begin(range, size)
     first = Primitive.rb_num2int range.begin
     first += size if first < 0
@@ -96,8 +94,8 @@ class String
   def =~(pattern)
     case pattern
     when Regexp
-      match_data = pattern.search_region(self, 0, bytesize, true)
-      Truffle::RegexpOperations.set_last_match(match_data, Primitive.caller_binding)
+      match_data = Truffle::RegexpOperations.search_region(pattern, self, 0, bytesize, true)
+      Primitive.regexp_last_match_set(Primitive.caller_special_variables, match_data)
       return match_data.begin(0) if match_data
     when String
       raise TypeError, 'type mismatch: String given'
@@ -159,6 +157,15 @@ class String
     end
   end
 
+  def grapheme_clusters(&block)
+    if block_given?
+      each_grapheme_cluster(&block)
+    else
+      regex = Regexp.new('\X'.encode(encoding))
+      scan(regex)
+    end
+  end
+
   def include?(needle)
     !!Primitive.find_string(self, StringValue(needle), 0)
   end
@@ -193,7 +200,7 @@ class String
 
     if pattern.kind_of? Regexp
       if m = Truffle::RegexpOperations.match(pattern, self)
-        Truffle::RegexpOperations.set_last_match(m, Primitive.caller_binding)
+        Primitive.regexp_last_match_set(Primitive.caller_special_variables, m)
         return [m.pre_match, m.to_s, m.post_match]
       end
     else
@@ -215,8 +222,8 @@ class String
 
   def rpartition(pattern)
     if pattern.kind_of? Regexp
-      if m = pattern.search_region(self, 0, size, false)
-        Truffle::RegexpOperations.set_last_match(m, Primitive.caller_binding)
+      if m = Truffle::RegexpOperations.search_region(pattern, self, 0, size, false)
+        Primitive.regexp_last_match_set(Primitive.caller_special_variables, m)
         [m.pre_match, m[0], m.post_match]
       end
     else
@@ -252,7 +259,7 @@ class String
     while match = pattern.match_from(self, index)
       fin = match.byte_end(0)
 
-      if match.collapsing?
+      if Truffle::RegexpOperations.collapsing?(match)
         if char = Primitive.string_find_character(self, fin)
           index = fin + char.bytesize
         else
@@ -267,19 +274,19 @@ class String
       val.taint if taint
 
       if block
-        Truffle::RegexpOperations.set_last_match(match, Primitive.caller_binding)
+        Primitive.regexp_last_match_set(Primitive.caller_special_variables, match)
         yield(val)
       else
         ret << val
       end
     end
 
-    Truffle::RegexpOperations.set_last_match(last_match, Primitive.caller_binding)
+    Primitive.regexp_last_match_set(Primitive.caller_special_variables, last_match)
     ret
   end
 
-  def split(pattern=nil, limit=undefined)
-    Truffle::Splitter.split(self, pattern, limit)
+  def split(pattern=nil, limit=undefined, &block)
+    Truffle::Splitter.split(self, pattern, limit, &block)
   end
 
   def squeeze(*strings)
@@ -353,6 +360,15 @@ class String
     return to_enum(:each_codepoint) { size } unless block_given?
 
     each_char { |c| yield c.ord }
+    self
+  end
+
+  def each_grapheme_cluster
+    return to_enum(:each_grapheme_cluster) { size } unless block_given?
+
+    regex = Regexp.new('\X'.encode(encoding))
+    # scan(regex, &block) would leak the $ vars in the user block which is probably unwanted
+    scan(regex) { |e| yield e }
     self
   end
 
@@ -439,7 +455,7 @@ class String
         status = ec.primitive_convert self.dup, dest, nil, nil, ec.options
         raise ec.last_error unless status == :finished
         return replace(dest)
-      elsif options == 0
+      else
         force_encoding to_enc
       end
     end
@@ -481,13 +497,13 @@ class String
 
   def end_with?(*suffixes)
     if suffixes.size == 1 and suffix = suffixes[0] and String === suffix
-      Truffle::Type.compatible_encoding self, suffix
+      Primitive.encoding_ensure_compatible self, suffix
       return self[-suffix.length, suffix.length] == suffix
     end
 
     suffixes.each do |original_suffix|
       suffix = Truffle::Type.rb_convert_type original_suffix, String, :to_str
-      Truffle::Type.compatible_encoding self, suffix
+      Primitive.encoding_ensure_compatible self, suffix
 
       return true if self[-suffix.length, suffix.length] == suffix
     end
@@ -632,7 +648,7 @@ class String
     stop = StringValue(stop)
 
     if stop.size == 1 && size == 1
-      enc = Truffle::Type.compatible_encoding(self.encoding, stop.encoding)
+      enc = Primitive.encoding_ensure_compatible(self.encoding, stop.encoding)
 
       return self if self > stop
       after_stop = stop.getbyte(0) + (exclusive ? 0 : 1)
@@ -668,7 +684,7 @@ class String
   def sub(pattern, replacement=undefined, &block)
     s = dup
     s.sub!(pattern, replacement, &block)
-    Truffle::RegexpOperations.set_last_match($~, Primitive.caller_binding)
+    Primitive.regexp_last_match_set(Primitive.caller_special_variables, $~)
     s
   end
 
@@ -704,8 +720,8 @@ class String
     pattern = Truffle::Type.coerce_to_regexp(pattern, true) unless pattern.kind_of? Regexp
     match = pattern.match_from(self, 0)
 
-    Truffle::RegexpOperations.set_last_match(match, block.binding) if block
-    Truffle::RegexpOperations.set_last_match(match, Primitive.caller_binding)
+    Primitive.regexp_last_match_set(Primitive.proc_special_variables(block), match) if block
+    Primitive.regexp_last_match_set(Primitive.caller_special_variables, match)
 
     if match
       ret = match.pre_match
@@ -755,7 +771,7 @@ class String
       if one.kind_of? Regexp
         lm = $~
         self[one] = '' if result
-        Truffle::RegexpOperations.set_last_match(lm, Primitive.caller_binding)
+        Primitive.regexp_last_match_set(Primitive.caller_special_variables, lm)
       else
         self[one] = '' if result
       end
@@ -765,7 +781,7 @@ class String
       if one.kind_of? Regexp
         lm = $~
         self[one, two] = '' if result
-        Truffle::RegexpOperations.set_last_match(lm, Primitive.caller_binding)
+        Primitive.regexp_last_match_set(Primitive.caller_special_variables, lm)
       else
         self[one, two] = '' if result
       end
@@ -828,7 +844,7 @@ class String
         if j = Primitive.string_previous_byte_index(self, bytes)
           chr = Primitive.string_chr_at(self, j)
 
-          if chr.ord == 13
+          if !Primitive.nil?(chr) && chr.ord == 13
             bytes = j
           end
         end
@@ -841,13 +857,13 @@ class String
 
       while i = Primitive.string_previous_byte_index(self, bytes)
         chr = Primitive.string_chr_at(self, i)
-        break unless chr.ord == 10
+        break unless !Primitive.nil?(chr) && chr.ord == 10
 
         bytes = i
 
         if j = Primitive.string_previous_byte_index(self, i)
           chr = Primitive.string_chr_at(self, j)
-          if chr.ord == 13
+          if !Primitive.nil?(chr) && chr.ord == 13
             bytes = j
           end
         end
@@ -968,7 +984,7 @@ class String
     else
       ret, match_data = Truffle::StringOperations.gsub_internal(s, pattern, replacement)
     end
-    Truffle::RegexpOperations.set_last_match(match_data, Primitive.caller_binding)
+    Primitive.regexp_last_match_set(Primitive.caller_special_variables, match_data)
     s.replace(ret) if ret
     s
   end
@@ -983,7 +999,7 @@ class String
     else
       ret, match_data = Truffle::StringOperations.gsub_internal(self, pattern, replacement)
     end
-    Truffle::RegexpOperations.set_last_match(match_data, Primitive.caller_binding)
+    Primitive.regexp_last_match_set(Primitive.caller_special_variables, match_data)
     if ret
       replace(ret)
       self
@@ -1002,7 +1018,7 @@ class String
              else
                pattern.match self, pos
              end
-    Truffle::RegexpOperations.set_last_match($~, Primitive.caller_binding)
+    Primitive.regexp_last_match_set(Primitive.caller_special_variables, $~)
     result
   end
 
@@ -1121,7 +1137,7 @@ class String
     end
 
     replacement = StringValue replacement
-    enc = Truffle::Type.compatible_encoding self, replacement
+    enc = Primitive.encoding_ensure_compatible self, replacement
 
     Primitive.string_splice(self, replacement, bi, bs, enc)
   end
@@ -1132,7 +1148,7 @@ class String
     end
 
     replacement = StringValue replacement
-    enc = Truffle::Type.compatible_encoding self, replacement
+    enc = Primitive.encoding_ensure_compatible self, replacement
 
     Primitive.string_splice(self, replacement, start, index.bytesize, enc)
   end
@@ -1163,7 +1179,7 @@ class String
     end
 
     replacement = StringValue replacement
-    enc = Truffle::Type.compatible_encoding self, replacement
+    enc = Primitive.encoding_ensure_compatible self, replacement
 
     Primitive.string_splice(self, replacement, bi, bs, enc)
   end
@@ -1191,7 +1207,7 @@ class String
     end
 
     replacement = StringValue replacement
-    enc = Truffle::Type.compatible_encoding self, replacement
+    enc = Primitive.encoding_ensure_compatible self, replacement
 
     bi = Primitive.string_byte_index_from_char_index(self, match.begin(count))
     bs = Primitive.string_byte_index_from_char_index(self, match.end(count)) - bi
@@ -1205,7 +1221,7 @@ class String
     padding = StringValue(padding)
     raise ArgumentError, 'zero width padding' if padding.empty?
 
-    enc = Truffle::Type.compatible_encoding self, padding
+    enc = Primitive.encoding_ensure_compatible self, padding
 
     width = Primitive.rb_to_int width
     return dup if width <= size
@@ -1250,7 +1266,7 @@ class String
     padding = StringValue(padding)
     raise ArgumentError, 'zero width padding' if padding.empty?
 
-    enc = Truffle::Type.compatible_encoding self, padding
+    enc = Primitive.encoding_ensure_compatible self, padding
 
     width = Primitive.rb_to_int width
     return dup if width <= size
@@ -1294,7 +1310,7 @@ class String
     padding = StringValue(padding)
     raise ArgumentError, 'zero width padding' if padding.empty?
 
-    enc = Truffle::Type.compatible_encoding self, padding
+    enc = Primitive.encoding_ensure_compatible self, padding
 
     width = Primitive.rb_to_int width
     return dup if width <= size
@@ -1330,20 +1346,20 @@ class String
 
       start += size if start < 0
       if start < 0 or start > size
-        Truffle::RegexpOperations.set_last_match(nil, Primitive.caller_binding) if str.kind_of? Regexp
+        Primitive.regexp_last_match_set(Primitive.caller_special_variables, nil) if str.kind_of? Regexp
         return
       end
     end
 
     if str.kind_of? Regexp
-      Truffle::Type.compatible_encoding self, str
+      Primitive.encoding_ensure_compatible self, str
 
       start = Primitive.string_byte_index_from_char_index(self, start)
       if match = str.match_from(self, start)
-        Truffle::RegexpOperations.set_last_match(match, Primitive.caller_binding)
+        Primitive.regexp_last_match_set(Primitive.caller_special_variables, match)
         return match.begin(0)
       else
-        Truffle::RegexpOperations.set_last_match(nil, Primitive.caller_binding)
+        Primitive.regexp_last_match_set(Primitive.caller_special_variables, nil)
         return
       end
     end
@@ -1351,7 +1367,7 @@ class String
     str = StringValue(str)
     return start if str == ''
 
-    Truffle::Type.compatible_encoding self, str
+    Primitive.encoding_ensure_compatible self, str
 
     return if str.size > size
 
@@ -1397,10 +1413,10 @@ class String
       end
 
     when Regexp
-      Truffle::Type.compatible_encoding self, sub
+      Primitive.encoding_ensure_compatible self, sub
 
-      match_data = sub.search_region(self, 0, byte_finish, false)
-      Truffle::RegexpOperations.set_last_match(match_data, Primitive.caller_binding)
+      match_data = Truffle::RegexpOperations.search_region(sub, self, 0, byte_finish, false)
+      Primitive.regexp_last_match_set(Primitive.caller_special_variables, match_data)
       return match_data.begin(0) if match_data
 
     else
@@ -1413,7 +1429,7 @@ class String
       # Boundary case
       return finish if needle.empty?
 
-      Truffle::Type.compatible_encoding self, needle
+      Primitive.encoding_ensure_compatible self, needle
       if byte_index = Primitive.find_string_reverse(self, needle, byte_finish)
         return Primitive.string_byte_character_index(self, byte_index)
       end
@@ -1428,14 +1444,14 @@ class String
     end
 
     # This is the workaround because `Primitive.caller_binding` doesn't work inside blocks yet.
-    binding = Primitive.caller_binding if prefixes.any?(Regexp)
+    storage = Primitive.caller_special_variables if prefixes.any?(Regexp)
 
     prefixes.each do |original_prefix|
       case original_prefix
       when Regexp
-        Truffle::Type.compatible_encoding(self, original_prefix)
-        match_data = original_prefix.match_onwards(self, 0, true)
-        Truffle::RegexpOperations.set_last_match(match_data, binding)
+        Primitive.encoding_ensure_compatible(self, original_prefix)
+        match_data = Truffle::RegexpOperations.match_onwards(original_prefix, self, 0, true)
+        Primitive.regexp_last_match_set(storage, match_data)
         return true if match_data
       else
         prefix = Truffle::Type.rb_check_convert_type original_prefix, String, :to_str
@@ -1521,10 +1537,20 @@ class String
     s
   end
 
-  def casecmp?(other)
-    other = StringValue(other)
+  def casecmp(other)
+    other = Truffle::Type.rb_check_convert_type(other , String, :to_str)
+    if Primitive.nil? other
+      nil
+    else
+      Primitive.string_casecmp(self, other)
+    end
+  end
 
-    enc = Encoding.compatible?(encoding, other.encoding)
+  def casecmp?(other)
+    other = Truffle::Type.rb_check_convert_type(other , String, :to_str)
+    return nil if Primitive.nil? other
+
+    enc = Primitive.encoding_compatible?(encoding, other.encoding)
     if Primitive.nil? enc
       return nil
     end
@@ -1559,7 +1585,7 @@ class String
       return Primitive.string_cmp self, other
     end
 
-    Thread.detect_recursion self, other do
+    Truffle::ThreadOperations.detect_pair_recursion self, other do
       if other.respond_to?(:<=>) && !other.respond_to?(:to_str)
         return nil unless tmp = (other <=> self)
       elsif other.respond_to?(:to_str)

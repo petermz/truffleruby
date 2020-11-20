@@ -18,27 +18,36 @@
  */
 package org.truffleruby.language.literal;
 
-import org.truffleruby.Layouts;
+import org.truffleruby.RubyLanguage;
 import org.truffleruby.core.rope.Rope;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.language.RubyContextSourceNode;
-import org.truffleruby.language.objects.AllocateObjectNode;
+import org.truffleruby.language.objects.AllocateHelperNode;
 
 import com.oracle.truffle.api.frame.VirtualFrame;
-import com.oracle.truffle.api.object.DynamicObject;
 
 public class StringLiteralNode extends RubyContextSourceNode {
 
-    @Child AllocateObjectNode allocateNode = AllocateObjectNode.create();
+    @Child AllocateHelperNode allocateNode = AllocateHelperNode.create();
 
     private final Rope rope;
+    private final RubyLanguage language;
 
-    public StringLiteralNode(Rope rope) {
+    public StringLiteralNode(RubyLanguage language, Rope rope) {
+        this.language = language;
         this.rope = rope;
     }
 
     @Override
-    public DynamicObject execute(VirtualFrame frame) {
-        return allocateNode.allocate(coreLibrary().stringClass, Layouts.STRING.build(false, false, rope));
+    public RubyString execute(VirtualFrame frame) {
+        final RubyString string = new RubyString(
+                coreLibrary().stringClass,
+                RubyLanguage.stringShape,
+                false,
+                false,
+                rope);
+        allocateNode.trace(string, this, language);
+        return string;
     }
 
 }

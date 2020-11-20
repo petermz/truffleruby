@@ -27,13 +27,13 @@ handled by the `open` command on macOS and the `xdg-open` command on Linux.
 To illustrate, here's a command for profiling and inline script.
 
 ```bash
-$ jt profile -e "x = 'abc'; 100_000.times { x.upcase }"
+jt profile -e "x = 'abc'; 100_000.times { x.upcase }"
 ```
 
 Here's a command for profiling the `gem list` command:
 
 ```bash
-$ jt profile -S gem list
+jt profile -S gem list
 ```
 
 #### The Less Easy Way
@@ -48,7 +48,7 @@ Creating the flame graph is a multi-stage process. First, we need to profile the
 with the JSON formatter:
 
 ```bash
-$ jt ruby --cpusampler --cpusampler.SampleInternal --cpusampler.Mode=roots --cpusampler.Output=json -e 'p :hello' > simple-app.json
+jt ruby --cpusampler --cpusampler.SampleInternal --cpusampler.Mode=roots --cpusampler.Output=json -e 'p :hello' > simple-app.json
 ```
 
 Since we want to profile the TruffleRuby runtime itself, we use the
@@ -67,7 +67,7 @@ into TruffleRuby's parent directory. Now you can run the script to transform the
 pipe it into the script that will generate the SVG data:
 
 ```bash
-$ ../FlameGraph/stackcollapse-graalvm.rb simple-app.json | ../FlameGraph/flamegraph.pl > simple-app.svg
+../FlameGraph/stackcollapse-graalvm.rb simple-app.json | ../FlameGraph/flamegraph.pl > simple-app.svg
 ```
 
 At this point, you should open the SVG file in a Chromium-based web browser. Your system
@@ -82,7 +82,7 @@ The `--metrics-profile-require` option can be used to profile the time used for 
 
 For example, the `summary` view provides an overview of where time is spent:
 ```
-$ jt ruby --experimental-options --cpusampler --cpusampler.Mode=roots --metrics-profile-require=summary -e 'require "rubygems"' |& grep "metrics "
+$ jt ruby --experimental-options --cpusampler --metrics-profile-require=summary -e 'require "rubygems"' |& grep "metrics "
  metrics execute                                                      |       1122ms  99.6% |   0.0% ||        212ms  18.8% |   0.0% | (metrics)~1:0 
  metrics parsing                                                      |         71ms   6.3% |   0.0% ||         71ms   6.3% |   0.0% | (metrics)~1:0 
  metrics translating                                                  |         60ms   5.3% |   0.0% ||         60ms   5.3% |   0.0% | (metrics)~1:0 
@@ -92,4 +92,4 @@ $ jt ruby --experimental-options --cpusampler --cpusampler.Mode=roots --metrics-
 
 This feature can also be used to generate a flame graph with detailed require timings:
 
-`$ jt profile --experimental-options --cpusampler --cpusampler.Mode=roots --metrics-profile-require=detail -e 'require "rubygems"'`
+`$ jt profile --metrics-profile-require=detail -e 'require "rubygems"'`

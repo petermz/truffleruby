@@ -14,7 +14,6 @@ import java.util.Arrays;
 import java.util.List;
 
 import org.jcodings.specific.UTF8Encoding;
-import org.truffleruby.Layouts;
 import org.truffleruby.builtins.CoreMethod;
 import org.truffleruby.builtins.CoreMethodArrayArgumentsNode;
 import org.truffleruby.builtins.CoreModule;
@@ -23,6 +22,7 @@ import org.truffleruby.builtins.PrimitiveArrayArgumentsNode;
 import org.truffleruby.builtins.PrimitiveNode;
 import org.truffleruby.core.array.ArrayGuards;
 import org.truffleruby.core.array.ArrayHelpers;
+import org.truffleruby.core.array.RubyArray;
 import org.truffleruby.core.array.library.ArrayStoreLibrary;
 import org.truffleruby.core.basicobject.BasicObjectNodes.ReferenceEqualNode;
 import org.truffleruby.core.cast.ToIntNode;
@@ -31,30 +31,33 @@ import org.truffleruby.core.cast.ToRubyIntegerNode;
 import org.truffleruby.core.kernel.KernelNodes;
 import org.truffleruby.core.kernel.KernelNodes.ToSNode;
 import org.truffleruby.core.kernel.KernelNodesFactory;
+import org.truffleruby.core.klass.RubyClass;
+import org.truffleruby.core.module.RubyModule;
 import org.truffleruby.core.rope.CodeRange;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.core.string.StringNodes;
+import org.truffleruby.core.string.StringUtils;
 import org.truffleruby.core.symbol.RubySymbol;
+import org.truffleruby.language.Nil;
 import org.truffleruby.language.NotProvided;
+import org.truffleruby.language.RubyDynamicObject;
 import org.truffleruby.language.RubyNode;
 import org.truffleruby.language.control.RaiseException;
 import org.truffleruby.language.library.RubyLibrary;
 import org.truffleruby.language.objects.IsANode;
 import org.truffleruby.language.objects.LogicalClassNode;
-import org.truffleruby.language.objects.ObjectIVarGetNode;
-import org.truffleruby.language.objects.ObjectIVarSetNode;
+import org.truffleruby.language.objects.WriteObjectFieldNode;
 
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.dsl.Cached;
+import com.oracle.truffle.api.dsl.Fallback;
 import com.oracle.truffle.api.dsl.ImportStatic;
 import com.oracle.truffle.api.dsl.NodeChild;
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.library.CachedLibrary;
-import com.oracle.truffle.api.object.DynamicObject;
+import com.oracle.truffle.api.object.DynamicObjectLibrary;
 import com.oracle.truffle.api.object.HiddenKey;
-import com.oracle.truffle.api.object.Property;
-import com.oracle.truffle.api.object.Shape;
 import com.oracle.truffle.api.profiles.BranchProfile;
 
 @CoreModule("Truffle::Type")
@@ -66,8 +69,8 @@ public abstract class TypeNodes {
         @Child private IsANode isANode = IsANode.create();
 
         @Specialization
-        protected boolean objectKindOf(Object object, DynamicObject rubyClass) {
-            return isANode.executeIsA(object, rubyClass);
+        protected boolean objectKindOf(Object object, RubyModule module) {
+            return isANode.executeIsA(object, module);
         }
 
     }
@@ -79,8 +82,9 @@ public abstract class TypeNodes {
                 .create(null, null, null);
 
         @Specialization
-        protected boolean objectRespondTo(VirtualFrame frame, Object object, Object name, boolean includePrivate) {
-            return respondToNode.executeDoesRespondTo(frame, object, name, includePrivate);
+        protected boolean objectRespondTo(Object object, Object name, boolean includePrivate) {
+            // Do not pass a frame here, we want to ignore refinements and not need to read the caller frame
+            return respondToNode.executeDoesRespondTo(null, object, name, includePrivate);
         }
 
     }
@@ -91,7 +95,7 @@ public abstract class TypeNodes {
         @Child private LogicalClassNode classNode = LogicalClassNode.create();
 
         @Specialization
-        protected DynamicObject objectClass(VirtualFrame frame, Object object) {
+        protected RubyClass objectClass(Object object) {
             return classNode.executeLogicalClass(object);
         }
 
@@ -120,23 +124,21 @@ public abstract class TypeNodes {
     @Primitive(name = "object_ivars")
     public abstract static class ObjectInstanceVariablesNode extends PrimitiveArrayArgumentsNode {
 
-        public abstract DynamicObject executeGetIVars(Object self);
+        public abstract RubyArray executeGetIVars(Object self);
 
         @TruffleBoundary
         @Specialization
-        protected DynamicObject instanceVariables(DynamicObject object) {
-            Shape shape = object.getShape();
-            List<String> names = new ArrayList<>();
+        protected RubyArray instanceVariables(RubyDynamicObject object) {
+            final List<String> names = new ArrayList<>();
 
-            for (Property property : shape.getProperties()) {
-                Object name = property.getKey();
+            for (Object name : DynamicObjectLibrary.getUncached().getKeyArray(object)) {
                 if (name instanceof String) {
                     names.add((String) name);
                 }
             }
 
             final int size = names.size();
-            final String[] sortedNames = names.toArray(new String[size]);
+            final String[] sortedNames = names.toArray(StringUtils.EMPTY_STRING_ARRAY);
             Arrays.sort(sortedNames);
 
             final Object[] nameSymbols = new Object[size];
@@ -148,32 +150,37 @@ public abstract class TypeNodes {
         }
 
         @Specialization
-        protected DynamicObject instanceVariables(int object) {
+        protected RubyArray instanceVariables(int object) {
             return ArrayHelpers.createEmptyArray(getContext());
         }
 
         @Specialization
-        protected DynamicObject instanceVariables(long object) {
+        protected RubyArray instanceVariables(long object) {
             return ArrayHelpers.createEmptyArray(getContext());
         }
 
         @Specialization
-        protected DynamicObject instanceVariables(boolean object) {
-            return ArrayHelpers.createEmptyArray(getContext());
-        }
-
-        @Specialization(guards = "isNil(object)")
-        protected DynamicObject instanceVariablesNil(Object object) {
+        protected RubyArray instanceVariables(double object) {
             return ArrayHelpers.createEmptyArray(getContext());
         }
 
         @Specialization
-        protected DynamicObject instanceVariablesSymbol(RubySymbol object) {
+        protected RubyArray instanceVariables(boolean object) {
+            return ArrayHelpers.createEmptyArray(getContext());
+        }
+
+        @Specialization
+        protected RubyArray instanceVariablesNil(Nil object) {
+            return ArrayHelpers.createEmptyArray(getContext());
+        }
+
+        @Specialization
+        protected RubyArray instanceVariablesSymbol(RubySymbol object) {
             return ArrayHelpers.createEmptyArray(getContext());
         }
 
         @Specialization(guards = "isForeignObject(object)")
-        protected DynamicObject instanceVariablesForeign(Object object) {
+        protected RubyArray instanceVariablesForeign(Object object) {
             return ArrayHelpers.createEmptyArray(getContext());
         }
 
@@ -184,7 +191,7 @@ public abstract class TypeNodes {
 
         @TruffleBoundary
         @Specialization
-        protected Object ivarIsDefined(DynamicObject object, RubySymbol name) {
+        protected boolean ivarIsDefined(RubyDynamicObject object, RubySymbol name) {
             final String ivar = name.getString();
             return object.getShape().hasProperty(ivar);
         }
@@ -194,10 +201,10 @@ public abstract class TypeNodes {
     @Primitive(name = "object_ivar_get")
     public abstract static class ObjectIVarGetPrimitiveNode extends PrimitiveArrayArgumentsNode {
 
-        @Specialization
-        protected Object ivarGet(DynamicObject object, RubySymbol name,
-                @Cached ObjectIVarGetNode iVarGetNode) {
-            return iVarGetNode.executeIVarGet(object, name.getString());
+        @Specialization(limit = "getDynamicObjectCacheLimit()")
+        protected Object ivarGet(RubyDynamicObject object, RubySymbol name,
+                @CachedLibrary("object") DynamicObjectLibrary objectLibrary) {
+            return objectLibrary.getOrDefault(object, name.getString(), nil);
         }
     }
 
@@ -205,9 +212,10 @@ public abstract class TypeNodes {
     public abstract static class ObjectIVarSetPrimitiveNode extends PrimitiveArrayArgumentsNode {
 
         @Specialization
-        protected Object ivarSet(DynamicObject object, RubySymbol name, Object value,
-                @Cached ObjectIVarSetNode iVarSetNode) {
-            return iVarSetNode.executeIVarSet(object, name.getString(), value);
+        protected Object ivarSet(RubyDynamicObject object, RubySymbol name, Object value,
+                @Cached WriteObjectFieldNode writeNode) {
+            writeNode.execute(object, name.getString(), value);
+            return value;
         }
     }
 
@@ -226,14 +234,14 @@ public abstract class TypeNodes {
     @Primitive(name = "object_hidden_var_get")
     public abstract static class ObjectHiddenVarGetNode extends PrimitiveArrayArgumentsNode {
 
-        @Specialization
-        protected Object objectHiddenVarGet(DynamicObject object, Object identifier,
-                @Cached ObjectIVarGetNode iVarGetNode) {
-            return iVarGetNode.executeIVarGet(object, identifier);
+        @Specialization(limit = "getDynamicObjectCacheLimit()")
+        protected Object objectHiddenVarGet(RubyDynamicObject object, Object identifier,
+                @CachedLibrary("object") DynamicObjectLibrary objectLibrary) {
+            return objectLibrary.getOrDefault(object, identifier, nil);
         }
 
-        @Specialization(guards = "!isDynamicObject(object)")
-        protected Object hiddenVariableGetPrimitive(Object object, Object identifier) {
+        @Fallback
+        protected Object immutable(Object object, Object identifier) {
             return nil;
         }
     }
@@ -242,9 +250,10 @@ public abstract class TypeNodes {
     public abstract static class ObjectHiddenVarSetNode extends PrimitiveArrayArgumentsNode {
 
         @Specialization
-        protected Object objectHiddenVarSet(DynamicObject object, Object identifier, Object value,
-                @Cached ObjectIVarSetNode iVarSetNode) {
-            return iVarSetNode.executeIVarSet(object, identifier, value);
+        protected Object objectHiddenVarSet(RubyDynamicObject object, Object identifier, Object value,
+                @Cached WriteObjectFieldNode writeNode) {
+            writeNode.execute(object, identifier, value);
+            return value;
         }
     }
 
@@ -252,22 +261,26 @@ public abstract class TypeNodes {
     @ImportStatic(ArrayGuards.class)
     public abstract static class CanContainObjectNode extends PrimitiveArrayArgumentsNode {
 
+        public static CanContainObjectNode create() {
+            return TypeNodesFactory.CanContainObjectNodeFactory.create(null);
+        }
+
+        abstract public boolean execute(RubyArray array);
+
         @Specialization(
                 guards = {
-                        "isRubyArray(array)",
-                        "stores.accepts(getStore(array))",
-                        "stores.isPrimitive(getStore(array))" })
-        protected boolean primitiveArray(DynamicObject array,
+                        "stores.accepts(array.store)",
+                        "stores.isPrimitive(array.store)" })
+        protected boolean primitiveArray(RubyArray array,
                 @CachedLibrary(limit = "storageStrategyLimit()") ArrayStoreLibrary stores) {
             return false;
         }
 
         @Specialization(
                 guards = {
-                        "isRubyArray(array)",
-                        "stores.accepts(getStore(array))",
-                        "!stores.isPrimitive(getStore(array))" })
-        protected boolean objectArray(DynamicObject array,
+                        "stores.accepts(array.store)",
+                        "!stores.isPrimitive(array.store)" })
+        protected boolean objectArray(RubyArray array,
                 @CachedLibrary(limit = "storageStrategyLimit()") ArrayStoreLibrary stores) {
             return true;
         }
@@ -283,7 +296,7 @@ public abstract class TypeNodes {
     public abstract static class ObjectToSNode extends CoreMethodArrayArgumentsNode {
 
         @Specialization
-        protected DynamicObject toS(Object obj,
+        protected RubyString toS(Object obj,
                 @Cached ToSNode kernelToSNode) {
             return kernelToSNode.executeToS(obj);
         }
@@ -319,8 +332,8 @@ public abstract class TypeNodes {
         @Child private StringNodes.MakeStringNode makeStringNode = StringNodes.MakeStringNode.create();
 
         @Specialization
-        protected DynamicObject moduleName(DynamicObject module) {
-            final String name = Layouts.MODULE.getFields(module).getName();
+        protected RubyString moduleName(RubyModule module) {
+            final String name = module.fields.getName();
             return makeStringNode.executeMake(name, UTF8Encoding.INSTANCE, CodeRange.CR_UNKNOWN);
         }
 

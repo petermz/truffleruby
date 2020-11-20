@@ -14,9 +14,11 @@ import java.util.Arrays;
 import org.truffleruby.RubyContext;
 import org.truffleruby.RubyLanguage;
 import org.truffleruby.core.array.ArrayUtils;
+import org.truffleruby.core.cast.NameToJavaStringNode;
+import org.truffleruby.core.cast.ToSymbolNode;
 import org.truffleruby.language.RubyBaseNode;
 import org.truffleruby.language.control.RaiseException;
-import org.truffleruby.language.dispatch.CallDispatchHeadNode;
+import org.truffleruby.language.dispatch.DispatchNode;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.dsl.Cached;
@@ -38,7 +40,7 @@ public abstract class OutgoingForeignCallNode extends RubyBaseNode {
 
     // TODO (pitr-ch 01-Apr-2019): support to_int special form with new interop, consider others
     // TODO (pitr-ch 16-Sep-2019): merge into a dispatch node when it is migrated to DSL
-    // FIXME (pitr 13-Sep-2019): @Cached.Shared("arity") does not work, It thinks "The cache initializer does not match"
+    // FIXME (pitr 13-Sep-2019): @Shared("arity") does not work, It thinks "The cache initializer does not match"
 
     public abstract Object executeCall(Object receiver, String name, Object[] args);
 
@@ -106,7 +108,7 @@ public abstract class OutgoingForeignCallNode extends RubyBaseNode {
                     "name == cachedName",
                     "cachedName.equals(INDEX_READ)",
                     "args.length == 1",
-                    "isRubySymbol(first(args)) || isRubyString(first(args))" },
+                    "isRubySymbolOrString(first(args))" },
             limit = "1")
     protected Object readMember(Object receiver, String name, Object[] args,
             @Cached(value = "name", allowUncached = true) @Shared("name") String cachedName,
@@ -133,7 +135,7 @@ public abstract class OutgoingForeignCallNode extends RubyBaseNode {
                     "name == cachedName",
                     "cachedName.equals(INDEX_WRITE)",
                     "args.length == 2",
-                    "isRubySymbol(first(args)) || isRubyString(first(args))" },
+                    "isRubySymbolOrString(first(args))" },
             limit = "1")
     protected Object writeMember(Object receiver, String name, Object[] args,
             @Cached(value = "name", allowUncached = true) @Shared("name") String cachedName,
@@ -162,12 +164,13 @@ public abstract class OutgoingForeignCallNode extends RubyBaseNode {
     @Specialization(guards = { "name == cachedName", "cachedName.equals(SEND)", "args.length >= 1" }, limit = "1")
     protected Object sendOutgoing(Object receiver, String name, Object[] args,
             @Cached(value = "name", allowUncached = true) @Shared("name") String cachedName,
-            @Cached @Shared("dispatch") CallDispatchHeadNode dispatchNode) {
+            @Cached @Shared("dispatch") DispatchNode dispatchNode,
+            @Cached NameToJavaStringNode nameToJavaString) {
 
         final Object sendName = args[0];
         final Object[] sendArgs = Arrays.copyOfRange(args, 1, args.length);
 
-        return dispatchNode.dispatch(null, receiver, sendName, null, sendArgs);
+        return dispatchNode.dispatch(null, receiver, nameToJavaString.execute(sendName), null, sendArgs);
     }
 
     @Specialization(guards = { "name == cachedName", "cachedName.equals(NIL)", "args.length == 0" }, limit = "1")
@@ -195,7 +198,7 @@ public abstract class OutgoingForeignCallNode extends RubyBaseNode {
     protected Object deleteArrayElement(Object receiver, String name, Object[] args,
             @Cached(value = "name", allowUncached = true) @Shared("name") String cachedName,
             @CachedContext(RubyLanguage.class) RubyContext context,
-            @Cached @Shared("dispatch") CallDispatchHeadNode dispatchNode) {
+            @Cached @Shared("dispatch") DispatchNode dispatchNode) {
 
         return dispatchNode
                 .call(context.getCoreLibrary().truffleInteropModule, "remove_array_element", receiver, args[0]);
@@ -206,12 +209,12 @@ public abstract class OutgoingForeignCallNode extends RubyBaseNode {
                     "name == cachedName",
                     "cachedName.equals(DELETE)",
                     "args.length == 1",
-                    "isRubySymbol(first(args)) || isRubyString(first(args))" },
+                    "isRubySymbolOrString(first(args))" },
             limit = "1")
     protected Object deleteMember(Object receiver, String name, Object[] args,
             @Cached(value = "name", allowUncached = true) @Shared("name") String cachedName,
             @CachedContext(RubyLanguage.class) RubyContext context,
-            @Cached @Shared("dispatch") CallDispatchHeadNode dispatchNode) {
+            @Cached @Shared("dispatch") DispatchNode dispatchNode) {
 
         return dispatchNode.call(context.getCoreLibrary().truffleInteropModule, "remove_member", receiver, args[0]);
     }
@@ -359,12 +362,12 @@ public abstract class OutgoingForeignCallNode extends RubyBaseNode {
             @Cached(value = "expectedArity(cachedName)", allowUncached = true) int cachedArity,
             @Cached(value = "specialToInteropMethod(cachedName)", allowUncached = true) String interopMethodName,
             @CachedContext(RubyLanguage.class) RubyContext context,
-            @Cached @Shared("dispatch") CallDispatchHeadNode callDispatchHeadNode,
+            @Cached @Shared("dispatch") DispatchNode dispatchNode,
             @Cached ConditionProfile errorProfile) {
 
         if (errorProfile.profile(args.length == cachedArity)) {
             final Object[] arguments = ArrayUtils.unshift(args, receiver);
-            return callDispatchHeadNode.call(
+            return dispatchNode.call(
                     context.getCoreLibrary().truffleInteropModule,
                     interopMethodName,
                     arguments);
@@ -433,7 +436,7 @@ public abstract class OutgoingForeignCallNode extends RubyBaseNode {
             limit = "1")
     protected Object readOrInvoke(Object receiver, String name, Object[] args,
             @Cached(value = "name", allowUncached = true) @Shared("name") String cachedName,
-            @Cached ToRubySymbolNode toSymbolNode,
+            @Cached ToSymbolNode toSymbolNode,
             @Cached InteropNodes.InvokeNode invokeNode,
             @Cached InteropNodes.ReadMemberNode readNode,
             @Cached ConditionProfile invocable,
@@ -496,7 +499,7 @@ public abstract class OutgoingForeignCallNode extends RubyBaseNode {
         protected Object callBoolean(Object receiver, String name, Object[] args,
                 @CachedLibrary("receiver") InteropLibrary receivers,
                 @Cached TranslateInteropExceptionNode translateInteropException,
-                @Cached CallDispatchHeadNode dispatch) {
+                @Cached DispatchNode dispatch) {
             try {
                 return dispatch.call(receivers.asBoolean(receiver), name, args);
             } catch (InteropException e) {
@@ -509,7 +512,7 @@ public abstract class OutgoingForeignCallNode extends RubyBaseNode {
                 @Cached ForeignToRubyNode foreignToRubyNode,
                 @CachedLibrary("receiver") InteropLibrary receivers,
                 @Cached TranslateInteropExceptionNode translateInteropException,
-                @Cached CallDispatchHeadNode dispatch) {
+                @Cached DispatchNode dispatch) {
             try {
                 Object rubyString = foreignToRubyNode.executeConvert(receivers.asString(receiver));
                 return dispatch.call(rubyString, name, args);
@@ -524,7 +527,7 @@ public abstract class OutgoingForeignCallNode extends RubyBaseNode {
         protected Object callInt(Object receiver, String name, Object[] args,
                 @CachedLibrary("receiver") InteropLibrary receivers,
                 @Cached TranslateInteropExceptionNode translateInteropException,
-                @Cached CallDispatchHeadNode dispatch) {
+                @Cached DispatchNode dispatch) {
             try {
                 return dispatch.call(receivers.asInt(receiver), name, args);
             } catch (InteropException e) {
@@ -541,7 +544,7 @@ public abstract class OutgoingForeignCallNode extends RubyBaseNode {
         protected Object callLong(Object receiver, String name, Object[] args,
                 @CachedLibrary("receiver") InteropLibrary receivers,
                 @Cached TranslateInteropExceptionNode translateInteropException,
-                @Cached CallDispatchHeadNode dispatch) {
+                @Cached DispatchNode dispatch) {
             try {
                 return dispatch.call(receivers.asLong(receiver), name, args);
             } catch (InteropException e) {
@@ -558,7 +561,7 @@ public abstract class OutgoingForeignCallNode extends RubyBaseNode {
         protected Object callDouble(Object receiver, String name, Object[] args,
                 @CachedLibrary("receiver") InteropLibrary receivers,
                 @Cached TranslateInteropExceptionNode translateInteropException,
-                @Cached CallDispatchHeadNode dispatch) {
+                @Cached DispatchNode dispatch) {
             try {
                 return dispatch.call(receivers.asDouble(receiver), name, args);
             } catch (InteropException e) {

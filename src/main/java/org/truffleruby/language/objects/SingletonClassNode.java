@@ -9,135 +9,146 @@
  */
 package org.truffleruby.language.objects;
 
-import org.truffleruby.Layouts;
+import com.oracle.truffle.api.dsl.CachedContext;
+import com.oracle.truffle.api.dsl.GenerateUncached;
+import org.truffleruby.RubyContext;
+import org.truffleruby.RubyLanguage;
+import org.truffleruby.core.basicobject.BasicObjectNodes.ObjectIDNode;
 import org.truffleruby.core.klass.ClassNodes;
+import org.truffleruby.core.klass.RubyClass;
+import org.truffleruby.core.numeric.RubyBignum;
 import org.truffleruby.core.string.StringUtils;
 import org.truffleruby.core.symbol.RubySymbol;
 import org.truffleruby.language.Nil;
-import org.truffleruby.language.RubyContextSourceNode;
-import org.truffleruby.language.library.RubyLibrary;
+import org.truffleruby.language.RubyDynamicObject;
 import org.truffleruby.language.RubyNode;
+import org.truffleruby.language.RubySourceNode;
 import org.truffleruby.language.control.RaiseException;
+import org.truffleruby.language.library.RubyLibrary;
 import org.truffleruby.language.objects.shared.SharedObjects;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.NodeChild;
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.object.DynamicObject;
-import com.oracle.truffle.api.object.Shape;
 
+@GenerateUncached
 @NodeChild(value = "value", type = RubyNode.class)
-public abstract class SingletonClassNode extends RubyContextSourceNode {
+public abstract class SingletonClassNode extends RubySourceNode {
+
+    public static SingletonClassNode getUncached() {
+        return SingletonClassNodeGen.getUncached();
+    }
 
     public static SingletonClassNode create() {
         return SingletonClassNodeGen.create(null);
     }
 
-    public abstract DynamicObject executeSingletonClass(Object value);
+    public abstract RubyClass executeSingletonClass(Object value);
 
     @Specialization(guards = "value")
-    protected DynamicObject singletonClassTrue(boolean value) {
-        return coreLibrary().trueClass;
+    protected RubyClass singletonClassTrue(boolean value,
+            @CachedContext(RubyLanguage.class) RubyContext context) {
+        return context.getCoreLibrary().trueClass;
     }
 
     @Specialization(guards = "!value")
-    protected DynamicObject singletonClassFalse(boolean value) {
-        return coreLibrary().falseClass;
+    protected RubyClass singletonClassFalse(boolean value,
+            @CachedContext(RubyLanguage.class) RubyContext context) {
+        return context.getCoreLibrary().falseClass;
     }
 
     @Specialization
-    protected DynamicObject singletonClassNil(Nil value) {
-        return coreLibrary().nilClass;
+    protected RubyClass singletonClassNil(Nil value,
+            @CachedContext(RubyLanguage.class) RubyContext context) {
+        return context.getCoreLibrary().nilClass;
     }
 
     @Specialization
-    protected DynamicObject singletonClass(int value) {
-        return noSingletonClass();
+    protected RubyClass singletonClass(int value,
+            @CachedContext(RubyLanguage.class) RubyContext context) {
+        return noSingletonClass(context);
     }
 
     @Specialization
-    protected DynamicObject singletonClass(long value) {
-        return noSingletonClass();
+    protected RubyClass singletonClass(long value,
+            @CachedContext(RubyLanguage.class) RubyContext context) {
+        return noSingletonClass(context);
     }
 
     @Specialization
-    protected DynamicObject singletonClass(double value) {
-        return noSingletonClass();
-    }
-
-    @Specialization(guards = "isRubyBignum(value)")
-    protected DynamicObject singletonClassBignum(DynamicObject value) {
-        return noSingletonClass();
+    protected RubyClass singletonClass(double value,
+            @CachedContext(RubyLanguage.class) RubyContext context) {
+        return noSingletonClass(context);
     }
 
     @Specialization
-    protected DynamicObject singletonClassSymbol(RubySymbol value) {
-        return noSingletonClass();
+    protected RubyClass singletonClassBignum(RubyBignum value,
+            @CachedContext(RubyLanguage.class) RubyContext context) {
+        return noSingletonClass(context);
+    }
+
+    @Specialization
+    protected RubyClass singletonClassSymbol(RubySymbol value,
+            @CachedContext(RubyLanguage.class) RubyContext context) {
+        return noSingletonClass(context);
     }
 
     @Specialization(
-            guards = {
-                    "isRubyClass(rubyClass)",
-                    "rubyClass.getShape() == cachedShape",
-                    "cachedSingletonClass != null" },
-            limit = "getCacheLimit()")
-    protected DynamicObject singletonClassClassCached(DynamicObject rubyClass,
-            @Cached("rubyClass.getShape()") Shape cachedShape,
-            @Cached("getSingletonClassOrNull(rubyClass)") DynamicObject cachedSingletonClass) {
-
-        return cachedSingletonClass;
-    }
-
-    @Specialization(guards = "isRubyClass(rubyClass)", replaces = "singletonClassClassCached")
-    protected DynamicObject singletonClassClassUncached(DynamicObject rubyClass) {
-        return ClassNodes.getSingletonClass(getContext(), rubyClass);
-    }
-
-    @Specialization(
-            guards = {
-                    "object == cachedObject",
-                    "!isRubyBignum(cachedObject)",
-                    "!isRubyClass(cachedObject)" },
+            guards = { "rubyClass == cachedClass", "cachedSingletonClass != null" },
             limit = "getIdentityCacheLimit()")
-    protected DynamicObject singletonClassInstanceCached(DynamicObject object,
-            @Cached("object") DynamicObject cachedObject,
-            @Cached("getSingletonClassForInstance(object)") DynamicObject cachedSingletonClass) {
+    protected RubyClass singletonClassClassCached(RubyClass rubyClass,
+            @Cached("rubyClass") RubyClass cachedClass,
+            @Cached("getSingletonClassOrNull(cachedClass)") RubyClass cachedSingletonClass) {
         return cachedSingletonClass;
     }
 
+    @Specialization(replaces = "singletonClassClassCached")
+    protected RubyClass singletonClassClassUncached(RubyClass rubyClass,
+            @CachedContext(RubyLanguage.class) RubyContext context) {
+        return ClassNodes.getSingletonClass(context, rubyClass);
+    }
+
     @Specialization(
-            guards = { "!isRubyBignum(object)", "!isRubyClass(object)" },
-            replaces = "singletonClassInstanceCached")
-    protected DynamicObject singletonClassInstanceUncached(DynamicObject object) {
+            guards = { "object == cachedObject", "!isRubyClass(cachedObject)" },
+            limit = "getIdentityCacheLimit()")
+    protected RubyClass singletonClassInstanceCached(RubyDynamicObject object,
+            @Cached("object") RubyDynamicObject cachedObject,
+            @Cached("getSingletonClassForInstance(object)") RubyClass cachedSingletonClass) {
+        return cachedSingletonClass;
+    }
+
+    @Specialization(guards = "!isRubyClass(object)", replaces = "singletonClassInstanceCached")
+    protected RubyClass singletonClassInstanceUncached(RubyDynamicObject object) {
         return getSingletonClassForInstance(object);
     }
 
-    private DynamicObject noSingletonClass() {
-        throw new RaiseException(getContext(), coreExceptions().typeErrorCantDefineSingleton(this));
+    private RubyClass noSingletonClass(RubyContext context) {
+        throw new RaiseException(context, context.getCoreExceptions().typeErrorCantDefineSingleton(this));
     }
 
-    protected DynamicObject getSingletonClassOrNull(DynamicObject object) {
-        return ClassNodes.getSingletonClassOrNull(getContext(), object);
+    protected RubyClass getSingletonClassOrNull(RubyClass rubyClass) {
+        return ClassNodes.getSingletonClassOrNull(rubyClass.fields.getContext(), rubyClass);
     }
 
     @TruffleBoundary
-    protected DynamicObject getSingletonClassForInstance(DynamicObject object) {
+    protected RubyClass getSingletonClassForInstance(RubyDynamicObject object) {
         synchronized (object) {
-            DynamicObject metaClass = Layouts.BASIC_OBJECT.getMetaClass(object);
-            if (Layouts.CLASS.getIsSingleton(metaClass)) {
+            RubyClass metaClass = object.getMetaClass();
+            if (metaClass.isSingleton) {
                 return metaClass;
             }
+            final RubyContext context = metaClass.fields.getContext();
 
-            final DynamicObject logicalClass = Layouts.BASIC_OBJECT.getLogicalClass(object);
+            final RubyClass logicalClass = object.getLogicalClass();
 
             final String name = StringUtils.format(
                     "#<Class:#<%s:0x%x>>",
-                    Layouts.MODULE.getFields(logicalClass).getName(),
-                    ObjectIDOperations.verySlowGetObjectID(getContext(), object));
+                    logicalClass.fields.getName(),
+                    ObjectIDNode.getUncached().execute(object));
 
-            final DynamicObject singletonClass = ClassNodes.createSingletonClassOfObject(
-                    getContext(),
+            final RubyClass singletonClass = ClassNodes.createSingletonClassOfObject(
+                    context,
                     getEncapsulatingSourceSection(),
                     logicalClass,
                     object,
@@ -147,15 +158,19 @@ public abstract class SingletonClassNode extends RubyContextSourceNode {
                 RubyLibrary.getUncached().freeze(singletonClass);
             }
 
-            SharedObjects.propagate(getContext(), object, singletonClass);
+            SharedObjects.propagate(context, object, singletonClass);
+            object.setMetaClass(singletonClass);
 
-            Layouts.BASIC_OBJECT.setMetaClass(object, singletonClass);
             return singletonClass;
         }
     }
 
     protected int getCacheLimit() {
-        return getContext().getOptions().CLASS_CACHE;
+        return RubyLanguage.getCurrentContext().getOptions().CLASS_CACHE;
+    }
+
+    protected int getIdentityCacheLimit() {
+        return RubyLanguage.getCurrentContext().getOptions().IDENTITY_CACHE;
     }
 
 }

@@ -9,22 +9,20 @@
  */
 package org.truffleruby.stdlib;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.HashMap;
 import java.util.Map;
 
 import org.jcodings.specific.UTF8Encoding;
-import org.truffleruby.RubyContext;
 import org.truffleruby.builtins.CoreMethod;
 import org.truffleruby.builtins.CoreMethodArrayArgumentsNode;
 import org.truffleruby.builtins.CoreModule;
+import org.truffleruby.core.array.RubyArray;
 import org.truffleruby.core.rope.CodeRange;
 import org.truffleruby.core.string.StringNodes;
 import org.truffleruby.language.control.RaiseException;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.source.Source;
 
 @CoreModule("Truffle::Coverage")
@@ -59,8 +57,7 @@ public abstract class CoverageNodes {
 
         @TruffleBoundary
         @Specialization
-        protected Object resultArray() {
-            final List<DynamicObject> results = new ArrayList<>();
+        protected RubyArray resultArray() {
 
             final Map<Source, long[]> counts = getContext().getCoverageManager().getCounts();
 
@@ -68,6 +65,7 @@ public abstract class CoverageNodes {
                 throw new RaiseException(getContext(), coreExceptions().runtimeErrorCoverageNotEnabled(this));
             }
 
+            Map<String, RubyArray> results = new HashMap<>();
             for (Map.Entry<Source, long[]> source : counts.entrySet()) {
                 final long[] countsArray = source.getValue();
 
@@ -81,16 +79,18 @@ public abstract class CoverageNodes {
                     }
                 }
 
-                results.add(createArray(new Object[]{
+                final String path = getContext().getSourcePath(source.getKey());
+                assert !results.containsKey(path) : "path already exists in coverage results";
+                results.put(path, createArray(new Object[]{
                         makeStringNode.executeMake(
-                                RubyContext.getPath(source.getKey()),
+                                path,
                                 UTF8Encoding.INSTANCE,
                                 CodeRange.CR_UNKNOWN),
                         createArray(countsStore)
                 }));
             }
 
-            return createArray(results.toArray());
+            return createArray(results.values().toArray());
         }
 
     }

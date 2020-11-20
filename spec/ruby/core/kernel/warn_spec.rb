@@ -17,7 +17,7 @@ describe "Kernel#warn" do
     Kernel.should have_private_instance_method(:warn)
   end
 
-  it "requires multiple arguments" do
+  it "accepts multiple arguments" do
     Kernel.method(:warn).arity.should < 0
   end
 
@@ -114,6 +114,38 @@ describe "Kernel#warn" do
       end
     end
 
+    ruby_version_is "3.0" do
+      it "accepts :category keyword with a symbol" do
+        -> {
+          $VERBOSE = true
+          warn("message", category: :deprecated)
+        }.should output(nil, "message\n")
+      end
+
+      it "accepts :category keyword with nil" do
+        -> {
+          $VERBOSE = true
+          warn("message", category: nil)
+        }.should output(nil, "message\n")
+      end
+
+      it "accepts :category keyword with object convertible to symbol" do
+        o = Object.new
+        def o.to_sym; :deprecated; end
+        -> {
+          $VERBOSE = true
+          warn("message", category: o)
+        }.should output(nil, "message\n")
+      end
+
+      it "raises if :category keyword is not nil and not convertible to symbol" do
+        -> {
+          $VERBOSE = true
+          warn("message", category: Object.new)
+        }.should raise_error(TypeError)
+      end
+    end
+
     it "converts first arg using to_s" do
       w = KernelSpecs::WarnInNestedCall.new
 
@@ -164,5 +196,36 @@ describe "Kernel#warn" do
     h = {}
     -> { warn(**h) }.should_not complain(verbose: true)
     -> { warn('foo', **h) }.should complain("foo\n")
+  end
+
+  it "does not call Warning.warn if self is the Warning module" do
+    # RubyGems redefines Kernel#warn so we need to use a subprocess and disable RubyGems here
+    code = <<-RUBY
+    def Warning.warn(*args, **kwargs)
+      raise 'should not be called'
+    end
+    Kernel.instance_method(:warn).bind(Warning).call('Kernel#warn spec edge case')
+    RUBY
+    out = ruby_exe(code, args: "2>&1", options: "--disable-gems")
+    out.should == "Kernel#warn spec edge case\n"
+    $?.should.success?
+  end
+
+  it "avoids recursion if Warning#warn is redefined and calls super" do
+    # This works because of the spec above, which is the workaround for it.
+    # Note that redefining Warning#warn is a mistake which would naturally end in infinite recursion,
+    # Warning.extend Module.new { def warn } should be used instead.
+    # RubyGems redefines Kernel#warn so we need to use a subprocess and disable RubyGems here
+    code = <<-RUBY
+    module Warning
+      def warn(*args)
+        super
+      end
+    end
+    warn "avoid infinite recursion"
+    RUBY
+    out = ruby_exe(code, args: "2>&1", options: "--disable-gems")
+    out.should == "avoid infinite recursion\n"
+    $?.should.success?
   end
 end

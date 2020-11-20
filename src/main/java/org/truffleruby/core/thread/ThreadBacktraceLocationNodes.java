@@ -10,33 +10,33 @@
 package org.truffleruby.core.thread;
 
 import org.jcodings.specific.UTF8Encoding;
-import org.truffleruby.Layouts;
 import org.truffleruby.RubyContext;
 import org.truffleruby.builtins.CoreMethod;
 import org.truffleruby.builtins.CoreModule;
 import org.truffleruby.builtins.UnaryCoreMethodNode;
 import org.truffleruby.core.rope.CodeRange;
 import org.truffleruby.core.rope.Rope;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.core.string.StringNodes;
 import org.truffleruby.core.string.StringOperations;
 import org.truffleruby.language.backtrace.Backtrace;
-import org.truffleruby.language.backtrace.BacktraceFormatter;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.TruffleStackTraceElement;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.source.Source;
 import com.oracle.truffle.api.source.SourceSection;
+import org.truffleruby.language.backtrace.BacktraceFormatter;
 
 @CoreModule(value = "Thread::Backtrace::Location", isClass = true)
 public class ThreadBacktraceLocationNodes {
 
     @TruffleBoundary
-    private static SourceSection getAvailableSourceSection(RubyContext context, DynamicObject threadBacktraceLocation) {
-        final Backtrace backtrace = Layouts.THREAD_BACKTRACE_LOCATION.getBacktrace(threadBacktraceLocation);
-        final int activationIndex = Layouts.THREAD_BACKTRACE_LOCATION.getActivationIndex(threadBacktraceLocation);
+    private static SourceSection getAvailableSourceSection(RubyContext context,
+            RubyBacktraceLocation threadBacktraceLocation) {
+        final Backtrace backtrace = threadBacktraceLocation.backtrace;
+        final int activationIndex = threadBacktraceLocation.activationIndex;
 
         return context
                 .getUserBacktraceFormatter()
@@ -48,16 +48,18 @@ public class ThreadBacktraceLocationNodes {
 
         @TruffleBoundary
         @Specialization
-        protected DynamicObject absolutePath(DynamicObject threadBacktraceLocation,
+        protected Object absolutePath(RubyBacktraceLocation threadBacktraceLocation,
                 @Cached StringNodes.MakeStringNode makeStringNode) {
             final SourceSection sourceSection = getAvailableSourceSection(getContext(), threadBacktraceLocation);
 
             if (sourceSection == null) {
-                return coreStrings().UNKNOWN.createInstance();
+                return coreStrings().UNKNOWN.createInstance(getContext());
             } else {
                 final Source source = sourceSection.getSource();
-                final String path = RubyContext.getPath(source);
-                if (source.getPath() != null) { // A normal file
+                if (BacktraceFormatter.isRubyCore(getContext(), source)) {
+                    return nil;
+                } else if (source.getPath() != null) { // A normal file
+                    final String path = getContext().getSourcePath(source);
                     final String canonicalPath = getContext().getFeatureLoader().canonicalize(path);
                     final Rope cachedRope = getContext()
                             .getRopeCache()
@@ -77,22 +79,14 @@ public class ThreadBacktraceLocationNodes {
 
         @TruffleBoundary
         @Specialization
-        protected DynamicObject path(DynamicObject threadBacktraceLocation,
+        protected RubyString path(RubyBacktraceLocation threadBacktraceLocation,
                 @Cached StringNodes.MakeStringNode makeStringNode) {
             final SourceSection sourceSection = getAvailableSourceSection(getContext(), threadBacktraceLocation);
 
             if (sourceSection == null) {
-                return coreStrings().UNKNOWN.createInstance();
+                return coreStrings().UNKNOWN.createInstance(getContext());
             } else {
-                final Rope path;
-                if (BacktraceFormatter.isCore(getContext(), sourceSection)) {
-                    path = StringOperations.encodeRope(
-                            BacktraceFormatter.formatCorePath(getContext(), sourceSection),
-                            UTF8Encoding.INSTANCE);
-                } else {
-                    path = getContext().getPathToRopeCache().getCachedPath(sourceSection.getSource());
-                }
-
+                final Rope path = getContext().getPathToRopeCache().getCachedPath(sourceSection.getSource());
                 return makeStringNode.fromRope(path);
             }
         }
@@ -103,10 +97,10 @@ public class ThreadBacktraceLocationNodes {
     public abstract static class LabelNode extends UnaryCoreMethodNode {
 
         @Specialization
-        protected DynamicObject label(DynamicObject threadBacktraceLocation,
+        protected RubyString label(RubyBacktraceLocation threadBacktraceLocation,
                 @Cached StringNodes.MakeStringNode makeStringNode) {
-            final Backtrace backtrace = Layouts.THREAD_BACKTRACE_LOCATION.getBacktrace(threadBacktraceLocation);
-            final int index = Layouts.THREAD_BACKTRACE_LOCATION.getActivationIndex(threadBacktraceLocation);
+            final Backtrace backtrace = threadBacktraceLocation.backtrace;
+            final int index = threadBacktraceLocation.activationIndex;
             final TruffleStackTraceElement element = backtrace.getStackTrace()[index];
 
             final String label = Backtrace.labelFor(element);
@@ -117,10 +111,10 @@ public class ThreadBacktraceLocationNodes {
     @CoreMethod(names = "base_label")
     public abstract static class BaseLabelNode extends UnaryCoreMethodNode {
         @Specialization
-        protected DynamicObject label(DynamicObject threadBacktraceLocation,
+        protected RubyString label(RubyBacktraceLocation threadBacktraceLocation,
                 @Cached StringNodes.MakeStringNode makeStringNode) {
-            final Backtrace backtrace = Layouts.THREAD_BACKTRACE_LOCATION.getBacktrace(threadBacktraceLocation);
-            final int index = Layouts.THREAD_BACKTRACE_LOCATION.getActivationIndex(threadBacktraceLocation);
+            final Backtrace backtrace = threadBacktraceLocation.backtrace;
+            final int index = threadBacktraceLocation.activationIndex;
             final TruffleStackTraceElement element = backtrace.getStackTrace()[index];
 
             final String baseLabel = Backtrace.baseLabelFor(element);
@@ -133,7 +127,7 @@ public class ThreadBacktraceLocationNodes {
 
         @TruffleBoundary
         @Specialization
-        protected int lineno(DynamicObject threadBacktraceLocation) {
+        protected int lineno(RubyBacktraceLocation threadBacktraceLocation) {
             final SourceSection sourceSection = getAvailableSourceSection(getContext(), threadBacktraceLocation);
 
             return sourceSection.getStartLine();
@@ -147,9 +141,9 @@ public class ThreadBacktraceLocationNodes {
         @Child private StringNodes.MakeStringNode makeStringNode = StringNodes.MakeStringNode.create();
 
         @Specialization
-        protected DynamicObject toS(DynamicObject threadBacktraceLocation) {
-            final Backtrace backtrace = Layouts.THREAD_BACKTRACE_LOCATION.getBacktrace(threadBacktraceLocation);
-            final int index = Layouts.THREAD_BACKTRACE_LOCATION.getActivationIndex(threadBacktraceLocation);
+        protected RubyString toS(RubyBacktraceLocation threadBacktraceLocation) {
+            final Backtrace backtrace = threadBacktraceLocation.backtrace;
+            final int index = threadBacktraceLocation.activationIndex;
 
             final String description = getContext()
                     .getUserBacktraceFormatter()

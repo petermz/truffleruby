@@ -13,12 +13,19 @@ import java.io.File;
 import java.nio.ByteBuffer;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
+import java.util.Collections;
+import java.util.Objects;
+import java.util.Map;
+import java.util.WeakHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
 
+import com.oracle.truffle.api.CompilerAsserts;
+import com.oracle.truffle.api.CompilerDirectives;
+import com.oracle.truffle.api.nodes.EncapsulatingNodeReference;
+import com.oracle.truffle.api.nodes.Node;
 import org.graalvm.options.OptionDescriptor;
 import org.joni.Regex;
-import org.truffleruby.builtins.PrimitiveManager;
 import org.truffleruby.cext.ValueWrapperManager;
 import org.truffleruby.collections.WeakValueCache;
 import org.truffleruby.core.CoreLibrary;
@@ -27,6 +34,7 @@ import org.truffleruby.core.Hashing;
 import org.truffleruby.core.MarkingService;
 import org.truffleruby.core.ReferenceProcessingService.ReferenceProcessor;
 import org.truffleruby.core.array.ArrayOperations;
+import org.truffleruby.core.array.RubyArray;
 import org.truffleruby.core.encoding.EncodingManager;
 import org.truffleruby.core.exception.CoreExceptions;
 import org.truffleruby.core.hash.PreInitializationManager;
@@ -37,30 +45,33 @@ import org.truffleruby.core.kernel.TraceManager;
 import org.truffleruby.core.module.ModuleOperations;
 import org.truffleruby.core.objectspace.ObjectSpaceManager;
 import org.truffleruby.core.proc.ProcOperations;
+import org.truffleruby.core.proc.RubyProc;
 import org.truffleruby.core.regexp.RegexpCacheKey;
 import org.truffleruby.core.rope.PathToRopeCache;
 import org.truffleruby.core.rope.Rope;
 import org.truffleruby.core.rope.RopeCache;
 import org.truffleruby.core.string.CoreStrings;
 import org.truffleruby.core.string.FrozenStringLiterals;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.core.symbol.RubySymbol;
 import org.truffleruby.core.symbol.SymbolTable;
 import org.truffleruby.core.thread.ThreadManager;
 import org.truffleruby.core.time.GetTimeZoneNode;
 import org.truffleruby.debug.MetricsProfiler;
+import org.truffleruby.extra.ffi.Pointer;
 import org.truffleruby.interop.InteropManager;
 import org.truffleruby.language.CallStackManager;
 import org.truffleruby.language.LexicalScope;
-import org.truffleruby.language.RubyNode;
+import org.truffleruby.language.RubyBaseNode;
 import org.truffleruby.language.SafepointManager;
 import org.truffleruby.language.arguments.RubyArguments;
 import org.truffleruby.language.backtrace.BacktraceFormatter;
-import org.truffleruby.language.control.JavaException;
 import org.truffleruby.language.control.RaiseException;
 import org.truffleruby.language.loader.CodeLoader;
 import org.truffleruby.language.loader.FeatureLoader;
 import org.truffleruby.language.methods.InternalMethod;
 import org.truffleruby.language.objects.shared.SharedObjects;
+import org.truffleruby.options.LanguageOptions;
 import org.truffleruby.options.Options;
 import org.truffleruby.parser.TranslatorDriver;
 import org.truffleruby.platform.NativeConfiguration;
@@ -78,7 +89,7 @@ import com.oracle.truffle.api.TruffleFile;
 import com.oracle.truffle.api.TruffleLanguage;
 import com.oracle.truffle.api.TruffleLanguage.Env;
 import com.oracle.truffle.api.instrumentation.Instrumenter;
-import com.oracle.truffle.api.object.DynamicObject;
+import com.oracle.truffle.api.nodes.IndirectCallNode;
 import com.oracle.truffle.api.source.Source;
 import com.oracle.truffle.api.source.SourceSection;
 
@@ -93,7 +104,6 @@ public class RubyContext {
     @CompilationFinal private TruffleFile rubyHomeTruffleFile;
     @CompilationFinal private boolean hadHome;
 
-    private final PrimitiveManager primitiveManager = new PrimitiveManager();
     private final SafepointManager safepointManager = new SafepointManager(this);
     private final InteropManager interopManager = new InteropManager(this);
     private final CodeLoader codeLoader = new CodeLoader(this);
@@ -106,7 +116,6 @@ public class RubyContext {
     private final SharedObjects sharedObjects = new SharedObjects(this);
     private final AtExitManager atExitManager = new AtExitManager(this);
     private final CallStackManager callStack = new CallStackManager(this);
-    private final CoreStrings coreStrings = new CoreStrings(this);
     private final FrozenStringLiterals frozenStringLiterals = new FrozenStringLiterals(this);
     private final CoreExceptions coreExceptions = new CoreExceptions(this);
     private final EncodingManager encodingManager = new EncodingManager(this);
@@ -115,6 +124,7 @@ public class RubyContext {
     private final PreInitializationManager preInitializationManager;
     private final NativeConfiguration nativeConfiguration;
     private final ValueWrapperManager valueWrapperManager;
+    private final Map<Source, Integer> sourceLineOffsets = Collections.synchronizedMap(new WeakHashMap<>());
 
     @CompilationFinal private SecureRandom random;
     private final Hashing hashing;
@@ -139,11 +149,16 @@ public class RubyContext {
 
     private static boolean preInitializeContexts = TruffleRuby.PRE_INITIALIZE_CONTEXTS;
 
+    private static boolean isPreInitializingContext() {
+        boolean isPreInitializingContext = preInitializeContexts;
+        preInitializeContexts = false; // Only the first context is pre-initialized
+        return isPreInitializingContext;
+    }
+
     public RubyContext(RubyLanguage language, TruffleLanguage.Env env) {
         Metrics.printTime("before-context-constructor");
 
-        this.preInitializing = preInitializeContexts;
-        RubyContext.preInitializeContexts = false; // Only the first context is pre-initialized
+        this.preInitializing = isPreInitializingContext();
         this.preInitialized = preInitializing;
 
         preInitializationManager = preInitializing ? new PreInitializationManager(this) : null;
@@ -152,7 +167,7 @@ public class RubyContext {
         this.env = env;
         this.hasOtherPublicLanguages = computeHasOtherPublicLanguages(env);
 
-        options = createOptions(env);
+        options = createOptions(env, language.options);
 
         referenceProcessor = new ReferenceProcessor(this);
         finalizationService = new FinalizationService(this, referenceProcessor);
@@ -199,9 +214,13 @@ public class RubyContext {
 
         Metrics.printTime("before-instruments");
         final Instrumenter instrumenter = env.lookup(Instrumenter.class);
-        traceManager = new TraceManager(this, instrumenter);
+        traceManager = new TraceManager(language, this, instrumenter);
         coverageManager = new CoverageManager(this, instrumenter);
         Metrics.printTime("after-instruments");
+
+        // Initialize RaiseException eagerly so StackOverflowError is correctly handled and does not become
+        // NoClassDefFoundError: Could not initialize class org.truffleruby.language.control.RaiseException
+        Pointer.UNSAFE.ensureClassInitialized(RaiseException.class);
 
         Metrics.printTime("after-context-constructor");
     }
@@ -211,12 +230,11 @@ public class RubyContext {
         // Load the nodes
 
         Metrics.printTime("before-load-nodes");
-        coreLibrary.loadCoreNodes(primitiveManager);
+        coreLibrary.loadCoreNodes();
         Metrics.printTime("after-load-nodes");
 
         // Capture known builtin methods
-
-        coreMethods = new CoreMethods(this);
+        coreMethods = new CoreMethods(language, this);
 
         // Load the part of the core library defined in Ruby
 
@@ -254,7 +272,7 @@ public class RubyContext {
         this.hasOtherPublicLanguages = computeHasOtherPublicLanguages(newEnv);
 
         final Options oldOptions = this.options;
-        final Options newOptions = createOptions(newEnv);
+        final Options newOptions = createOptions(newEnv, language.options);
         final String newHome = findRubyHome(newOptions);
         if (!compatibleOptions(oldOptions, newOptions, this.hadHome, newHome != null)) {
             return false;
@@ -282,18 +300,16 @@ public class RubyContext {
         Metrics.printTime("after-rehash");
 
         Metrics.printTime("before-run-delayed-initialization");
-        final Object toRunAtInit = Layouts.MODULE
-                .getFields(coreLibrary.truffleBootModule)
+        final Object toRunAtInit = coreLibrary.truffleBootModule.fields
                 .getConstant("TO_RUN_AT_INIT")
                 .getValue();
-        for (Object proc : ArrayOperations.toIterable((DynamicObject) toRunAtInit)) {
-            final Source source = Layouts.PROC
-                    .getMethod((DynamicObject) proc)
+        for (Object proc : ArrayOperations.toIterable((RubyArray) toRunAtInit)) {
+            final Source source = ((RubyProc) proc).method
                     .getSharedMethodInfo()
                     .getSourceSection()
                     .getSource();
             TranslatorDriver.printParseTranslateExecuteMetric("before-run-delayed-initialization", this, source);
-            ProcOperations.rootCall((DynamicObject) proc);
+            ProcOperations.rootCall((RubyProc) proc);
             TranslatorDriver.printParseTranslateExecuteMetric("after-run-delayed-initialization", this, source);
         }
         Metrics.printTime("after-run-delayed-initialization");
@@ -349,10 +365,9 @@ public class RubyContext {
         return true;
     }
 
-    private Options createOptions(TruffleLanguage.Env env) {
+    private Options createOptions(TruffleLanguage.Env env, LanguageOptions languageOptions) {
         Metrics.printTime("before-options");
-        final Options options = new Options(env, env.getOptions());
-
+        final Options options = new Options(env, env.getOptions(), languageOptions);
         if (options.OPTIONS_LOG && RubyLanguage.LOGGER.isLoggable(Level.CONFIG)) {
             for (OptionDescriptor descriptor : OptionsCatalog.allDescriptors()) {
                 assert descriptor.getName().startsWith(TruffleRuby.LANGUAGE_ID);
@@ -407,8 +422,20 @@ public class RubyContext {
             return null;
         }
 
-        return method.getCallTarget().call(
-                RubyArguments.pack(null, null, method, null, object, null, arguments));
+        return IndirectCallNode.getUncached().call(
+                method.getCallTarget(),
+                RubyArguments.pack(null, null, null, method, null, object, null, arguments));
+    }
+
+    @TruffleBoundary
+    public Object send(Node currentNode, Object object, String methodName, Object... arguments) {
+        final EncapsulatingNodeReference callNodeRef = EncapsulatingNodeReference.getCurrent();
+        final Node prev = callNodeRef.set(currentNode);
+        try {
+            return send(object, methodName, arguments);
+        } finally {
+            callNodeRef.set(prev);
+        }
     }
 
     public void finalizeContext() {
@@ -446,6 +473,10 @@ public class RubyContext {
             return;
         }
 
+        if (consoleHolder != null) {
+            consoleHolder.close();
+        }
+
         threadManager.cleanupMainThread();
         safepointManager.checkNoRunningThreads();
 
@@ -462,7 +493,7 @@ public class RubyContext {
         }
 
         if (options.COVERAGE_GLOBAL) {
-            coverageManager.print(System.out);
+            coverageManager.print(this, System.out);
         }
     }
 
@@ -478,7 +509,9 @@ public class RubyContext {
         return hashing;
     }
 
-    public RubyLanguage getLanguage() {
+    public RubyLanguage getLanguageSlow() {
+        CompilerAsserts.neverPartOfCompilation(
+                "@CachedLanguage or a final field in the node should be used so the RubyLanguage instance is constant in PE code");
         return language;
     }
 
@@ -491,7 +524,7 @@ public class RubyContext {
     }
 
     /** Hashing for a RubyNode, the seed should only be used for a Ruby-level #hash method */
-    public Hashing getHashing(RubyNode node) {
+    public Hashing getHashing(RubyBaseNode node) {
         return hashing;
     }
 
@@ -522,6 +555,10 @@ public class RubyContext {
 
     public FeatureLoader getFeatureLoader() {
         return featureLoader;
+    }
+
+    public ReferenceProcessor getReferenceProcessor() {
+        return referenceProcessor;
     }
 
     public FinalizationService getFinalizationService() {
@@ -558,10 +595,6 @@ public class RubyContext {
 
     public LexicalScope getRootLexicalScope() {
         return rootLexicalScope;
-    }
-
-    public PrimitiveManager getPrimitiveManager() {
-        return primitiveManager;
     }
 
     public CoverageManager getCoverageManager() {
@@ -603,14 +636,14 @@ public class RubyContext {
     }
 
     public CoreStrings getCoreStrings() {
-        return coreStrings;
+        return language.coreStrings;
     }
 
-    public DynamicObject getFrozenStringLiteral(Rope rope) {
+    public RubyString getFrozenStringLiteral(Rope rope) {
         return frozenStringLiterals.getFrozenStringLiteral(rope);
     }
 
-    public DynamicObject getInternedString(DynamicObject string) {
+    public RubyString getInternedString(RubyString string) {
         return frozenStringLiterals.getFrozenStringLiteral(string);
     }
 
@@ -664,6 +697,8 @@ public class RubyContext {
 
     public void setConsoleHolder(ConsoleHolder consoleHolder) {
         synchronized (this) {
+            final ConsoleHolder previous = Objects.requireNonNull(this.consoleHolder);
+            previous.close();
             this.consoleHolder = consoleHolder;
         }
     }
@@ -732,13 +767,17 @@ public class RubyContext {
         return valueWrapperManager;
     }
 
+    public Map<Source, Integer> getSourceLineOffsets() {
+        return sourceLineOffsets;
+    }
+
     private static SecureRandom createRandomInstance() {
         try {
             /* We want to use a non-blocking source because this is what MRI does (via /dev/urandom) and it's been found
              * in practice that blocking sources are a problem for deploying JRuby. */
             return SecureRandom.getInstance("NativePRNGNonBlocking");
         } catch (NoSuchAlgorithmException e) {
-            throw new JavaException(e);
+            throw CompilerDirectives.shouldNotReachHere(e);
         }
     }
 
@@ -753,7 +792,9 @@ public class RubyContext {
         return regexpCache;
     }
 
-    /** Returns the path of a Source. Returns the short, potentially relative, path for the main script. Note however
+    /** {@link #getSourcePath(Source)} should be used instead whenever possible (i.e., when we can access the context).
+     *
+     * Returns the path of a Source. Returns the short, potentially relative, path for the main script. Note however
      * that the path of {@code eval(code, nil, filename)} is just {@code filename} and might not be absolute. */
     public static String getPath(Source source) {
         final String path = source.getPath();
@@ -767,12 +808,28 @@ public class RubyContext {
         }
     }
 
+    /** {@link RubyContext#getPath(Source)} but also handles core library sources. Ideally this method would be static
+     * but for now the core load path is an option and it also depends on the current working directory. Once we have
+     * Source metadata in Truffle we could use that to identify core library sources without needing the context. */
+    public String getSourcePath(Source source) {
+        final String path = RubyContext.getPath(source);
+        if (path.startsWith(coreLibrary.coreLoadPath)) {
+            return "<internal:core> " + path.substring(coreLibrary.coreLoadPath.length() + 1);
+        } else {
+            return RubyContext.getPath(source);
+        }
+    }
+
     public String getPathRelativeToHome(String path) {
         if (path.startsWith(rubyHome) && path.length() > rubyHome.length()) {
             return path.substring(rubyHome.length() + 1);
         } else {
             return path;
         }
+    }
+
+    public Object getTopScopeObject() {
+        return coreLibrary.topScopeObject;
     }
 
     @TruffleBoundary
@@ -786,6 +843,22 @@ public class RubyContext {
                 return path + ":" + section.getStartLine();
             } else {
                 return path;
+            }
+        }
+    }
+
+    @TruffleBoundary
+    public static String filenameLine(SourceSection section) {
+        if (section == null) {
+            return "no source section";
+        } else {
+            final String path = getPath(section.getSource());
+            final String filename = new File(path).getName();
+
+            if (section.isAvailable()) {
+                return filename + ":" + section.getStartLine();
+            } else {
+                return filename;
             }
         }
     }

@@ -47,7 +47,6 @@ fails:Public methods on Digest::Instance should not include to_str
 fails:Public methods on Digest::Instance should include block_length
 fails:Public methods on Dir should not include closed?
 fails:Public methods on Exception should not include backtrace?
-fails:Public methods on Exception should not include capture_backtrace!
 fails:Public methods on Exception should not include location
 fails:Public methods on Exception should not include set_context
 fails:Public methods on Exception should not include to_yaml_properties
@@ -76,8 +75,6 @@ fails:Public methods on Proc should not include ruby_method=
 fails:Public methods on Proc should include hash
 fails:Public methods on MatchData should not include byte_begin
 fails:Public methods on MatchData should not include byte_end
-fails:Public methods on MatchData should not include collapsing?
-fails:Public methods on MatchData should not include pre_match_from
 fails:Public methods on MatchData should include hash
 fails:Public methods on Method should include clone
 fails:Public methods on Method should include original_name
@@ -100,3 +97,8 @@ fails:Public methods on TracePoint should include instruction_sequence
 fails:Public methods on TracePoint should include parameters
 fails:Public methods on TracePoint should include raised_exception
 fails:Public methods on TracePoint should include return_value
+fails:Public methods on Digest::Base should include block_length
+fails:Public methods on Digest::Base should include digest_length
+fails:Public methods on Digest::Base should include reset
+fails:Public methods on Digest::MD5 should not include block_length
+fails:Public methods on Digest::SHA1 should not include block_length

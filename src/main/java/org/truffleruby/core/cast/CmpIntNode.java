@@ -20,17 +20,17 @@
 
 package org.truffleruby.core.cast;
 
-import org.truffleruby.Layouts;
 import org.truffleruby.core.numeric.BigIntegerOps;
+import org.truffleruby.core.numeric.RubyBignum;
 import org.truffleruby.core.string.StringUtils;
+import org.truffleruby.language.Nil;
 import org.truffleruby.language.RubyContextNode;
 import org.truffleruby.language.control.RaiseException;
-import org.truffleruby.language.dispatch.CallDispatchHeadNode;
+import org.truffleruby.language.dispatch.DispatchNode;
 
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.object.DynamicObject;
 
 /** This is a port of MRI's rb_cmpint, as taken from RubyComparable and broken out into specialized nodes. */
 public abstract class CmpIntNode extends RubyContextNode {
@@ -59,13 +59,13 @@ public abstract class CmpIntNode extends RubyContextNode {
         return 0;
     }
 
-    @Specialization(guards = "isRubyBignum(value)")
-    protected int cmpBignum(DynamicObject value, Object receiver, Object other) {
-        return BigIntegerOps.signum(Layouts.BIGNUM.getValue(value));
+    @Specialization
+    protected int cmpBignum(RubyBignum value, Object receiver, Object other) {
+        return BigIntegerOps.signum(value.value);
     }
 
-    @Specialization(guards = "isNil(nil)")
-    protected int cmpNil(Object nil, Object receiver, Object other) {
+    @Specialization
+    protected int cmpNil(Nil nil, Object receiver, Object other) {
         throw new RaiseException(getContext(), coreExceptions().argumentError(formatMessage(receiver, other), this));
     }
 
@@ -73,14 +73,14 @@ public abstract class CmpIntNode extends RubyContextNode {
     private String formatMessage(Object receiver, Object other) {
         return StringUtils.format(
                 "comparison of %s with %s failed",
-                Layouts.MODULE.getFields(coreLibrary().getLogicalClass(receiver)).getName(),
-                Layouts.MODULE.getFields(coreLibrary().getLogicalClass(other)).getName());
+                coreLibrary().getLogicalClass(receiver).fields.getName(),
+                coreLibrary().getLogicalClass(other).fields.getName());
     }
 
-    @Specialization(guards = { "!isInteger(value)", "!isLong(value)", "!isRubyBignum(value)", "!isNil(value)" })
+    @Specialization(guards = { "!isRubyInteger(value)", "!isNil(value)" })
     protected int cmpObject(Object value, Object receiver, Object other,
-            @Cached("createPrivate()") CallDispatchHeadNode gtNode,
-            @Cached("createPrivate()") CallDispatchHeadNode ltNode,
+            @Cached DispatchNode gtNode,
+            @Cached DispatchNode ltNode,
             @Cached BooleanCastNode gtCastNode,
             @Cached BooleanCastNode ltCastNode) {
 

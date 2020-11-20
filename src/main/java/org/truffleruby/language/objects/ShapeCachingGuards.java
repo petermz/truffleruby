@@ -10,43 +10,22 @@
 
 package org.truffleruby.language.objects;
 
-import org.truffleruby.Layouts;
-import org.truffleruby.RubyLanguage;
+import org.truffleruby.language.RubyDynamicObject;
 import org.truffleruby.language.objects.shared.SharedObjects;
 
 import com.oracle.truffle.api.CompilerDirectives;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.object.DynamicObjectLibrary;
-import com.oracle.truffle.api.object.ObjectType;
-import com.oracle.truffle.api.object.Shape;
 
 public abstract class ShapeCachingGuards {
 
-    public static boolean updateShape(DynamicObject object) {
+    public static boolean updateShape(RubyDynamicObject object) {
         CompilerDirectives.transferToInterpreterAndInvalidate();
         // TODO (eregon, 14 July 2020): review callers, once they use the library they should not need to update the Shape manually anymore
         boolean updated = DynamicObjectLibrary.getUncached().updateShape(object);
         if (updated) {
-            assert !SharedObjects.isShared(RubyLanguage.getCurrentContext(), object);
+            assert !SharedObjects.isShared(object);
         }
         return updated;
-    }
-
-    public static boolean isArrayShape(Shape shape) {
-        return Layouts.ARRAY.isArray(shape.getObjectType());
-    }
-
-    public static boolean isQueueShape(Shape shape) {
-        return Layouts.QUEUE.isQueue(shape.getObjectType());
-    }
-
-    private static final ObjectType BASIC_OBJECT_OBJECT_TYPE = Layouts.BASIC_OBJECT
-            .createBasicObjectShape(null, null)
-            .getShape()
-            .getObjectType();
-
-    public static boolean isBasicObjectShape(Shape shape) {
-        return shape.getObjectType().getClass() == BASIC_OBJECT_OBJECT_TYPE.getClass();
     }
 
 }

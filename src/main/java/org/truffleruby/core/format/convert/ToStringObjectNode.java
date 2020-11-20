@@ -13,6 +13,8 @@ import com.oracle.truffle.api.library.CachedLibrary;
 import org.truffleruby.core.cast.ToStrNode;
 import org.truffleruby.core.format.FormatNode;
 import org.truffleruby.core.format.exceptions.NoImplicitConversionException;
+import org.truffleruby.core.string.RubyString;
+import org.truffleruby.language.Nil;
 import org.truffleruby.language.RubyGuards;
 import org.truffleruby.language.library.RubyLibrary;
 
@@ -20,7 +22,6 @@ import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.NodeChild;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.frame.VirtualFrame;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.ConditionProfile;
 
 @NodeChild("value")
@@ -28,13 +29,13 @@ public abstract class ToStringObjectNode extends FormatNode {
 
     public abstract Object executeToStringObject(VirtualFrame frame, Object object);
 
-    @Specialization(guards = "isNil(nil)")
-    protected Object toStringString(Object nil) {
+    @Specialization
+    protected Object toStringString(Nil nil) {
         return nil;
     }
 
-    @Specialization(guards = "isRubyString(string)", limit = "getRubyLibraryCacheLimit()")
-    protected Object toStringString(VirtualFrame frame, DynamicObject string,
+    @Specialization(limit = "getRubyLibraryCacheLimit()")
+    protected Object toStringString(VirtualFrame frame, RubyString string,
             @CachedLibrary("string") RubyLibrary rubyLibrary,
             @Cached ConditionProfile taintedProfile) {
         if (taintedProfile.profile(rubyLibrary.isTainted(string))) {
@@ -48,7 +49,7 @@ public abstract class ToStringObjectNode extends FormatNode {
     protected Object toString(VirtualFrame frame, Object object,
             @Cached ConditionProfile notStringProfile,
             @Cached ToStrNode toStrNode) {
-        final Object value = toStrNode.executeToStr(frame, object);
+        final Object value = toStrNode.executeToStr(object);
 
         if (notStringProfile.profile(!RubyGuards.isRubyString(value))) {
             throw new NoImplicitConversionException(object, "String");

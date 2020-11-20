@@ -17,9 +17,10 @@ import java.util.concurrent.atomic.AtomicLong;
 
 import org.truffleruby.RubyContext;
 import org.truffleruby.RubyLanguage;
+import org.truffleruby.SuppressFBWarnings;
 import org.truffleruby.cext.ValueWrapperManagerFactory.AllocateHandleNodeGen;
 import org.truffleruby.cext.ValueWrapperManagerFactory.GetHandleBlockHolderNodeGen;
-import org.truffleruby.language.Nil;
+import org.truffleruby.extra.ffi.Pointer;
 import org.truffleruby.language.NotProvided;
 import org.truffleruby.language.RubyBaseNode;
 
@@ -33,6 +34,7 @@ import com.oracle.truffle.api.interop.TruffleObject;
 import com.oracle.truffle.api.library.ExportLibrary;
 import com.oracle.truffle.api.library.ExportMessage;
 
+@SuppressFBWarnings("VO")
 public class ValueWrapperManager {
 
     static final long UNSET_HANDLE = -2L;
@@ -57,7 +59,6 @@ public class ValueWrapperManager {
     public final ValueWrapper trueWrapper = new ValueWrapper(true, TRUE_HANDLE, null);
     public final ValueWrapper falseWrapper = new ValueWrapper(false, FALSE_HANDLE, null);
     public final ValueWrapper undefWrapper = new ValueWrapper(NotProvided.INSTANCE, UNDEF_HANDLE, null);
-    public final ValueWrapper nilWrapper;
 
     private volatile HandleBlockWeakReference[] blockMap = new HandleBlockWeakReference[0];
 
@@ -68,7 +69,6 @@ public class ValueWrapperManager {
     public ValueWrapperManager(RubyContext context) {
         this.context = context;
         this.threadBlocks = ThreadLocal.withInitial(this::makeThreadData);
-        nilWrapper = new ValueWrapper(Nil.INSTANCE, NIL_HANDLE, null);
     }
 
     public HandleThreadData makeThreadData() {
@@ -235,7 +235,7 @@ public class ValueWrapperManager {
         }
 
         public long setHandleOnWrapper(ValueWrapper wrapper) {
-            long handle = getBase() + count * 8;
+            long handle = getBase() + count * Pointer.SIZE;
             wrapper.setHandle(handle, this);
             wrappers[count] = wrapper;
             count++;

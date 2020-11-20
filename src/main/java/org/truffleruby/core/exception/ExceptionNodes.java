@@ -9,44 +9,48 @@
  */
 package org.truffleruby.core.exception;
 
-import org.truffleruby.Layouts;
+import com.oracle.truffle.api.dsl.CachedLanguage;
+import org.truffleruby.RubyLanguage;
+import org.truffleruby.SuppressFBWarnings;
 import org.truffleruby.builtins.CoreMethod;
 import org.truffleruby.builtins.CoreMethodArrayArgumentsNode;
 import org.truffleruby.builtins.CoreModule;
-import org.truffleruby.builtins.NonStandard;
 import org.truffleruby.builtins.Primitive;
 import org.truffleruby.builtins.PrimitiveArrayArgumentsNode;
 import org.truffleruby.builtins.PrimitiveNode;
+import org.truffleruby.core.array.RubyArray;
+import org.truffleruby.core.klass.RubyClass;
+import org.truffleruby.core.proc.RubyProc;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.language.NotProvided;
 import org.truffleruby.language.Visibility;
 import org.truffleruby.language.backtrace.Backtrace;
 import org.truffleruby.language.backtrace.BacktraceFormatter;
-import org.truffleruby.language.methods.LookupMethodNode;
-import org.truffleruby.language.objects.AllocateObjectNode;
-import org.truffleruby.language.objects.ReadObjectFieldNode;
+import org.truffleruby.language.methods.LookupMethodOnSelfNode;
+import org.truffleruby.language.objects.AllocateHelperNode;
 
-import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.CompilerDirectives.TruffleBoundary;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.frame.VirtualFrame;
-import com.oracle.truffle.api.object.DynamicObject;
+import com.oracle.truffle.api.object.Shape;
 import com.oracle.truffle.api.profiles.ConditionProfile;
 
 @CoreModule(value = "Exception", isClass = true)
 public abstract class ExceptionNodes {
 
-    protected final static String CUSTOM_BACKTRACE_FIELD = "@custom_backtrace";
-
     @CoreMethod(names = { "__allocate__", "__layout_allocate__" }, constructor = true, visibility = Visibility.PRIVATE)
     public abstract static class AllocateNode extends CoreMethodArrayArgumentsNode {
 
-        @Child private AllocateObjectNode allocateObjectNode = AllocateObjectNode.create();
+        @Child private AllocateHelperNode allocateNode = AllocateHelperNode.create();
 
         @Specialization
-        protected DynamicObject allocateException(DynamicObject rubyClass) {
-            return allocateObjectNode
-                    .allocate(rubyClass, Layouts.EXCEPTION.build(nil, null, null, nil, null, null));
+        protected RubyException allocateException(RubyClass rubyClass,
+                @CachedLanguage RubyLanguage language) {
+            final Shape shape = allocateNode.getCachedShape(rubyClass);
+            final RubyException instance = new RubyException(rubyClass, shape, nil, null, nil);
+            allocateNode.trace(instance, this, language);
+            return instance;
         }
 
     }
@@ -55,14 +59,14 @@ public abstract class ExceptionNodes {
     public abstract static class InitializeNode extends CoreMethodArrayArgumentsNode {
 
         @Specialization
-        protected DynamicObject initialize(DynamicObject exception, NotProvided message) {
-            Layouts.EXCEPTION.setMessage(exception, nil);
+        protected RubyException initialize(RubyException exception, NotProvided message) {
+            exception.message = nil;
             return exception;
         }
 
         @Specialization(guards = "wasProvided(message)")
-        protected DynamicObject initialize(DynamicObject exception, Object message) {
-            Layouts.EXCEPTION.setMessage(exception, message);
+        protected RubyException initialize(RubyException exception, Object message) {
+            exception.message = message;
             return exception;
         }
 
@@ -72,69 +76,70 @@ public abstract class ExceptionNodes {
     public abstract static class InitializeCopyNode extends CoreMethodArrayArgumentsNode {
 
         @Specialization(guards = "self == from")
-        protected Object initializeCopySelfIsSameAsFrom(DynamicObject self, DynamicObject from) {
+        protected RubyException initializeCopySelfIsSameAsFrom(RubyException self, RubyException from) {
             return self;
         }
 
         @Specialization(
-                guards = { "self != from", "isRubyException(from)", "!isNameError(from)", "!isSystemCallError(from)" })
-        protected Object initializeCopy(DynamicObject self, DynamicObject from) {
+                guards = { "self != from", "!isNameError(from)", "!isSystemCallError(from)" })
+        protected RubyException initializeCopy(RubyException self, RubyException from) {
             initializeExceptionCopy(self, from);
             return self;
         }
 
-        @Specialization(guards = { "self != from", "isSystemCallError(from)" })
-        protected Object initializeSystemCallErrorCopy(DynamicObject self, DynamicObject from) {
+        @Specialization(guards = "self != from")
+        protected RubyException initializeSystemCallErrorCopy(RubySystemCallError self, RubySystemCallError from) {
             initializeExceptionCopy(self, from);
-            Layouts.SYSTEM_CALL_ERROR.setErrno(self, Layouts.SYSTEM_CALL_ERROR.getErrno(from));
+            self.errno = from.errno;
             return self;
         }
 
-        @Specialization(guards = { "self != from", "isNoMethodError(from)" })
-        protected Object initializeCopyNoMethodError(DynamicObject self, DynamicObject from) {
+        @Specialization(guards = "self != from")
+        protected RubyException initializeCopyNoMethodError(RubyNoMethodError self, RubyNoMethodError from) {
             initializeExceptionCopy(self, from);
             initializeNameErrorCopy(self, from);
-            Layouts.NO_METHOD_ERROR.setArgs(self, Layouts.NO_METHOD_ERROR.getArgs(from));
+            self.args = from.args;
             return self;
         }
 
         @Specialization(
-                guards = { "self != from", "isNameError(from)", "!isNoMethodError(from)" })
-        protected Object initializeCopyNameError(DynamicObject self, DynamicObject from) {
+                guards = { "self != from", "!isNoMethodError(from)" })
+        protected RubyException initializeCopyNameError(RubyNameError self, RubyNameError from) {
             initializeExceptionCopy(self, from);
             initializeNameErrorCopy(self, from);
             return self;
         }
 
-        protected boolean isNameError(DynamicObject object) {
-            return Layouts.NAME_ERROR.isNameError(object);
+        protected boolean isNameError(RubyException object) {
+            return object instanceof RubyNameError;
         }
 
-        protected boolean isNoMethodError(DynamicObject object) {
-            return Layouts.NO_METHOD_ERROR.isNoMethodError(object);
+        protected boolean isNoMethodError(RubyException object) {
+            return object instanceof RubyNoMethodError;
         }
 
-        protected boolean isSystemCallError(DynamicObject object) {
-            return Layouts.SYSTEM_CALL_ERROR.isSystemCallError(object);
+        protected boolean isSystemCallError(RubyException object) {
+            return object instanceof RubySystemCallError;
         }
 
-        private void initializeNameErrorCopy(DynamicObject self, DynamicObject from) {
-            Layouts.NAME_ERROR.setName(self, Layouts.NAME_ERROR.getName(from));
-            Layouts.NAME_ERROR.setReceiver(self, Layouts.NAME_ERROR.getReceiver(from));
+        private void initializeNameErrorCopy(RubyNameError self, RubyNameError from) {
+            self.name = from.name;
+            self.receiver = from.receiver;
         }
 
-        private void initializeExceptionCopy(DynamicObject self, DynamicObject from) {
-            Backtrace backtrace = Layouts.EXCEPTION.getBacktrace(from);
+        private void initializeExceptionCopy(RubyException self, RubyException from) {
+            Backtrace backtrace = from.backtrace;
             if (backtrace != null) {
-                Layouts.EXCEPTION.setBacktrace(self, backtrace.copy(getContext(), self));
+                self.backtrace = backtrace.copy(getContext(), self);
             } else {
-                Layouts.EXCEPTION.setBacktrace(self, backtrace);
+                self.backtrace = null;
             }
-            Layouts.EXCEPTION.setFormatter(self, Layouts.EXCEPTION.getFormatter(from));
-            Layouts.EXCEPTION.setMessage(self, Layouts.EXCEPTION.getMessage(from));
-            Layouts.EXCEPTION.setCause(self, Layouts.EXCEPTION.getCause(from));
-            Layouts.EXCEPTION.setBacktraceStringArray(self, Layouts.EXCEPTION.getBacktraceStringArray(from));
-            Layouts.EXCEPTION.setBacktraceLocations(self, Layouts.EXCEPTION.getBacktraceLocations(from));
+            self.formatter = from.formatter;
+            self.message = from.message;
+            self.cause = from.cause;
+            self.backtraceStringArray = from.backtraceStringArray;
+            self.backtraceLocations = from.backtraceLocations;
+            self.customBacktrace = from.customBacktrace;
         }
 
     }
@@ -142,24 +147,21 @@ public abstract class ExceptionNodes {
     @CoreMethod(names = "backtrace")
     public abstract static class BacktraceNode extends CoreMethodArrayArgumentsNode {
 
-        @Child private ReadObjectFieldNode readCustomBacktraceNode;
-
         @Specialization
-        protected Object backtrace(DynamicObject exception,
+        protected Object backtrace(RubyException exception,
                 @Cached ConditionProfile hasCustomBacktraceProfile,
                 @Cached ConditionProfile hasBacktraceProfile) {
-            final Object customBacktrace = getReadCustomBacktraceNode()
-                    .execute(exception, CUSTOM_BACKTRACE_FIELD, null);
+            final Object customBacktrace = exception.customBacktrace;
 
             if (hasCustomBacktraceProfile.profile(customBacktrace != null)) {
                 return customBacktrace;
-            } else if (hasBacktraceProfile.profile(Layouts.EXCEPTION.getBacktrace(exception) != null)) {
-                DynamicObject backtraceStringArray = Layouts.EXCEPTION.getBacktraceStringArray(exception);
+            } else if (hasBacktraceProfile.profile(exception.backtrace != null)) {
+                RubyArray backtraceStringArray = exception.backtraceStringArray;
                 if (backtraceStringArray == null) {
                     backtraceStringArray = getContext().getUserBacktraceFormatter().formatBacktraceAsRubyStringArray(
                             exception,
-                            Layouts.EXCEPTION.getBacktrace(exception));
-                    Layouts.EXCEPTION.setBacktraceStringArray(exception, backtraceStringArray);
+                            exception.backtrace);
+                    exception.backtraceStringArray = backtraceStringArray;
                 }
                 return backtraceStringArray;
             } else {
@@ -167,31 +169,24 @@ public abstract class ExceptionNodes {
             }
         }
 
-        private ReadObjectFieldNode getReadCustomBacktraceNode() {
-            if (readCustomBacktraceNode == null) {
-                CompilerDirectives.transferToInterpreterAndInvalidate();
-                readCustomBacktraceNode = insert(ReadObjectFieldNode.create());
-            }
-
-            return readCustomBacktraceNode;
-        }
-
     }
 
     @CoreMethod(names = "backtrace_locations")
     public abstract static class BacktraceLocationsNode extends CoreMethodArrayArgumentsNode {
 
+        @Child private AllocateHelperNode allocateNode = AllocateHelperNode.create();
+
         @Specialization
-        protected Object backtraceLocations(DynamicObject exception,
+        protected Object backtraceLocations(RubyException exception,
                 @Cached ConditionProfile hasBacktraceProfile,
                 @Cached ConditionProfile hasLocationsProfile) {
-            if (hasBacktraceProfile.profile(Layouts.EXCEPTION.getBacktrace(exception) != null)) {
-                Object backtraceLocations = Layouts.EXCEPTION.getBacktraceLocations(exception);
+            if (hasBacktraceProfile.profile(exception.backtrace != null)) {
+                Object backtraceLocations = exception.backtraceLocations;
                 if (hasLocationsProfile.profile(backtraceLocations == null)) {
-                    Backtrace backtrace = Layouts.EXCEPTION.getBacktrace(exception);
+                    Backtrace backtrace = exception.backtrace;
                     backtraceLocations = backtrace
-                            .getBacktraceLocations(getContext(), GetBacktraceException.UNLIMITED, null);
-                    Layouts.EXCEPTION.setBacktraceLocations(exception, backtraceLocations);
+                            .getBacktraceLocations(getContext(), allocateNode, GetBacktraceException.UNLIMITED, null);
+                    exception.backtraceLocations = backtraceLocations;
                 }
                 return backtraceLocations;
             } else {
@@ -205,47 +200,32 @@ public abstract class ExceptionNodes {
 
         protected static final String METHOD = "backtrace";
 
-        @Child private ReadObjectFieldNode readCustomBacktraceNode;
-
         /* We can cheaply determine if an Exception has a backtrace via object inspection. However, if
          * `Exception#backtrace` is redefined, then `Exception#backtrace?` needs to follow along to be consistent. So,
          * we check if the method has been redefined here and if so, fall back to the Ruby code for the method by
          * returning `FAILURE` in the fallback specialization. */
         @Specialization(
                 guards = {
-                        "lookupNode.lookup(frame, exception, METHOD) == getContext().getCoreMethods().EXCEPTION_BACKTRACE", },
+                        "lookupNode.lookupProtected(frame, exception, METHOD) == getContext().getCoreMethods().EXCEPTION_BACKTRACE", },
                 limit = "1")
-        protected boolean backtraceQuery(VirtualFrame frame, DynamicObject exception,
-                @Cached LookupMethodNode lookupNode) {
-            final Object customBacktrace = readCustomBacktrace(exception);
-
-            return !(customBacktrace == null && Layouts.EXCEPTION.getBacktrace(exception) == null);
+        protected boolean backtraceQuery(VirtualFrame frame, RubyException exception,
+                @Cached LookupMethodOnSelfNode lookupNode) {
+            return !(exception.customBacktrace == null && exception.backtrace == null);
         }
 
         @Specialization
-        protected Object fallback(DynamicObject exception) {
+        protected Object fallback(RubyException exception) {
             return FAILURE;
-        }
-
-        private Object readCustomBacktrace(DynamicObject exception) {
-            if (readCustomBacktraceNode == null) {
-                CompilerDirectives.transferToInterpreterAndInvalidate();
-                readCustomBacktraceNode = insert(ReadObjectFieldNode.create());
-            }
-
-            return readCustomBacktraceNode.execute(exception, CUSTOM_BACKTRACE_FIELD, null);
         }
 
     }
 
-    @NonStandard
-    @CoreMethod(names = "capture_backtrace!", required = 1, lowerFixnum = 1)
+    @Primitive(name = "exception_capture_backtrace", lowerFixnum = 1)
     public abstract static class CaptureBacktraceNode extends CoreMethodArrayArgumentsNode {
 
         @Specialization
-        protected Object captureBacktrace(DynamicObject exception, int offset) {
-            final Backtrace backtrace = getContext().getCallStack().getBacktrace(this, offset);
-            Layouts.EXCEPTION.setBacktrace(exception, backtrace);
+        protected Object captureBacktrace(RubyException exception, int offset) {
+            exception.backtrace = getContext().getCallStack().getBacktrace(this, offset);
             return nil;
         }
 
@@ -255,8 +235,8 @@ public abstract class ExceptionNodes {
     public abstract static class MessagePrimitiveNode extends PrimitiveArrayArgumentsNode {
 
         @Specialization
-        protected Object message(DynamicObject exception) {
-            final Object message = Layouts.EXCEPTION.getMessage(exception);
+        protected Object message(RubyException exception) {
+            final Object message = exception.message;
             if (message == null) {
                 return nil;
             } else {
@@ -270,9 +250,20 @@ public abstract class ExceptionNodes {
     public abstract static class MessageSetNode extends PrimitiveArrayArgumentsNode {
 
         @Specialization
-        protected Object setMessage(DynamicObject error, Object message) {
-            Layouts.EXCEPTION.setMessage(error, message);
-            return error;
+        protected Object setMessage(RubyException exception, Object message) {
+            exception.message = message;
+            return nil;
+        }
+
+    }
+
+    @Primitive(name = "exception_set_custom_backtrace")
+    public abstract static class SetCustomBacktrace extends PrimitiveArrayArgumentsNode {
+
+        @Specialization
+        protected Object set(RubyException exception, Object customBacktrace) {
+            exception.customBacktrace = customBacktrace;
+            return customBacktrace;
         }
 
     }
@@ -281,8 +272,8 @@ public abstract class ExceptionNodes {
     public abstract static class FormatterPrimitiveNode extends PrimitiveArrayArgumentsNode {
 
         @Specialization
-        protected Object formatter(DynamicObject exception) {
-            final DynamicObject formatter = Layouts.EXCEPTION.getFormatter(exception);
+        protected Object formatter(RubyException exception) {
+            final RubyProc formatter = exception.formatter;
             if (formatter == null) {
                 return nil;
             } else {
@@ -296,8 +287,8 @@ public abstract class ExceptionNodes {
     public abstract static class CauseNode extends CoreMethodArrayArgumentsNode {
 
         @Specialization
-        protected Object cause(DynamicObject exception) {
-            return Layouts.EXCEPTION.getCause(exception);
+        protected Object cause(RubyException exception) {
+            return exception.cause;
         }
 
     }
@@ -306,8 +297,8 @@ public abstract class ExceptionNodes {
     public abstract static class ExceptionSetCauseNode extends PrimitiveArrayArgumentsNode {
 
         @Specialization
-        protected DynamicObject setCause(DynamicObject exception, Object cause) {
-            Layouts.EXCEPTION.setCause(exception, cause);
+        protected RubyException setCause(RubyException exception, Object cause) {
+            exception.cause = cause;
             return exception;
         }
 
@@ -319,7 +310,7 @@ public abstract class ExceptionNodes {
         @Child ErrnoErrorNode errnoErrorNode = ErrnoErrorNode.create();
 
         @Specialization
-        protected DynamicObject exceptionErrnoError(DynamicObject message, int errno) {
+        protected RubySystemCallError exceptionErrnoError(RubyString message, int errno) {
             return errnoErrorNode.execute(errno, message, null);
         }
 
@@ -329,6 +320,7 @@ public abstract class ExceptionNodes {
     @SuppressWarnings("unused")
     public static abstract class Breakpoint extends PrimitiveNode {
 
+        @SuppressFBWarnings("DLS")
         @TruffleBoundary
         @Specialization
         protected boolean breakpoint() {

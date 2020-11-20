@@ -12,10 +12,10 @@ package org.truffleruby.parser;
 import java.util.Arrays;
 
 import org.truffleruby.RubyContext;
+import org.truffleruby.collections.CachedSupplier;
 import org.truffleruby.core.IsNilNode;
 import org.truffleruby.core.cast.ArrayCastNodeGen;
 import org.truffleruby.core.proc.ProcType;
-import org.truffleruby.language.LazyRubyNode;
 import org.truffleruby.language.LexicalScope;
 import org.truffleruby.language.RubyNode;
 import org.truffleruby.language.RubyRootNode;
@@ -37,11 +37,13 @@ import org.truffleruby.language.methods.CatchForLambdaNode;
 import org.truffleruby.language.methods.CatchForMethodNode;
 import org.truffleruby.language.methods.CatchForProcNode;
 import org.truffleruby.language.methods.ExceptionTranslatingNode;
+import org.truffleruby.language.methods.Split;
 import org.truffleruby.language.methods.UnsupportedOperationBehavior;
 import org.truffleruby.language.supercall.ReadSuperArgumentsNode;
 import org.truffleruby.language.supercall.ReadZSuperArgumentsNode;
 import org.truffleruby.language.supercall.SuperCallNode;
 import org.truffleruby.language.supercall.ZSuperOutsideMethodNode;
+import org.truffleruby.language.threadlocal.MakeSpecialVariableStorageNode;
 import org.truffleruby.parser.ast.ArgsParseNode;
 import org.truffleruby.parser.ast.MethodDefParseNode;
 import org.truffleruby.parser.ast.ParseNode;
@@ -78,10 +80,10 @@ public class MethodTranslator extends BodyTranslator {
 
         if (parserContext == ParserContext.EVAL || context.getCoverageManager().isEnabled()) {
             shouldLazyTranslate = false;
-        } else if (RubyContext.getPath(source).startsWith(context.getCoreLibrary().coreLoadPath)) {
-            shouldLazyTranslate = context.getOptions().LAZY_TRANSLATION_CORE;
+        } else if (context.getSourcePath(source).startsWith(context.getCoreLibrary().coreLoadPath)) {
+            shouldLazyTranslate = language.options.LAZY_TRANSLATION_CORE;
         } else {
-            shouldLazyTranslate = context.getOptions().LAZY_TRANSLATION_USER;
+            shouldLazyTranslate = language.options.LAZY_TRANSLATION_USER;
         }
     }
 
@@ -117,7 +119,7 @@ public class MethodTranslator extends BodyTranslator {
         final RubyNode preludeProc;
         if (shouldConsiderDestructuringArrayArg(arity)) {
             final RubyNode readArrayNode = profileArgument(
-                    context,
+                    language,
                     new ReadPreArgumentNode(0, MissingArgumentBehavior.RUNTIME_ERROR));
             final RubyNode castArrayNode = ArrayCastNodeGen.create(readArrayNode);
 
@@ -180,7 +182,7 @@ public class MethodTranslator extends BodyTranslator {
                 environment.getFrameDescriptor(),
                 environment.getSharedMethodInfo(),
                 bodyProc,
-                true);
+                Split.HEURISTIC);
 
         // Lambdas
         RubyNode composed = composeBody(sourceSection, preludeLambda, body /* no copy, last usage */);
@@ -193,7 +195,7 @@ public class MethodTranslator extends BodyTranslator {
                 environment.getFrameDescriptor(),
                 environment.getSharedMethodInfo(),
                 composed,
-                true);
+                Split.HEURISTIC);
 
         // TODO CS 23-Nov-15 only the second one will get instrumented properly!
         final RootCallTarget callTargetAsLambda = Truffle.getRuntime().createCallTarget(newRootNodeForLambdas);
@@ -273,7 +275,10 @@ public class MethodTranslator extends BodyTranslator {
                 language,
                 arity,
                 sequence(bodySourceSection, Arrays.asList(loadArguments, body)));
+
         body.unsafeSetSourceSection(sourceSection);
+
+        body = sequence(bodySourceSection, Arrays.asList(new MakeSpecialVariableStorageNode(), body));
 
         if (environment.getFlipFlopStates().size() > 0) {
             body = sequence(bodySourceSection, Arrays.asList(initFlipFlopStates(sourceSection), body));
@@ -288,33 +293,32 @@ public class MethodTranslator extends BodyTranslator {
         return body;
     }
 
-    public RootCallTarget compileMethodNode(SourceIndexLength sourceSection, MethodDefParseNode defNode,
+    private RubyRootNode translateMethodNode(SourceIndexLength sourceSection, MethodDefParseNode defNode,
             ParseNode bodyNode) {
         final SourceIndexLength sourceIndexLength = defNode.getPosition();
         final SourceSection fullMethodSourceSection = sourceIndexLength.toSourceSection(source);
-
-        final RubyNode body;
-
-        if (shouldLazyTranslate) {
-            final TranslatorState state = getCurrentState();
-
-            body = new LazyRubyNode(context, () -> {
-                restoreState(state);
-                return compileMethodBody(sourceSection, bodyNode);
-            });
-        } else {
-            body = compileMethodBody(sourceSection, bodyNode);
-        }
-
-        final RubyRootNode rootNode = new RubyRootNode(
+        return new RubyRootNode(
                 context,
                 fullMethodSourceSection,
                 environment.getFrameDescriptor(),
                 environment.getSharedMethodInfo(),
-                body,
-                true);
+                compileMethodBody(sourceSection, bodyNode),
+                Split.HEURISTIC);
+    }
 
-        return Truffle.getRuntime().createCallTarget(rootNode);
+    public CachedSupplier<RootCallTarget> buildMethodNodeCompiler(SourceIndexLength sourceSection,
+            MethodDefParseNode defNode, ParseNode bodyNode) {
+
+        if (shouldLazyTranslate) {
+            final TranslatorState state = getCurrentState();
+            return new CachedSupplier<>(() -> {
+                restoreState(state);
+                return Truffle.getRuntime().createCallTarget(translateMethodNode(sourceSection, defNode, bodyNode));
+            });
+        } else {
+            final RubyRootNode root = translateMethodNode(sourceSection, defNode, bodyNode);
+            return new CachedSupplier<>(() -> Truffle.getRuntime().createCallTarget(root));
+        }
     }
 
     private void declareArguments() {

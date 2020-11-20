@@ -9,6 +9,7 @@
  */
 package org.truffleruby.core.basicobject;
 
+import com.oracle.truffle.api.dsl.CachedLanguage;
 import org.truffleruby.Layouts;
 import org.truffleruby.RubyContext;
 import org.truffleruby.RubyLanguage;
@@ -19,12 +20,21 @@ import org.truffleruby.builtins.UnaryCoreMethodNode;
 import org.truffleruby.core.basicobject.BasicObjectNodesFactory.InstanceExecNodeFactory;
 import org.truffleruby.core.basicobject.BasicObjectNodesFactory.ReferenceEqualNodeFactory;
 import org.truffleruby.core.cast.BooleanCastNode;
+import org.truffleruby.core.cast.NameToJavaStringNode;
 import org.truffleruby.core.exception.ExceptionOperations;
+import org.truffleruby.core.exception.RubyException;
+import org.truffleruby.core.klass.RubyClass;
 import org.truffleruby.core.module.ModuleOperations;
+import org.truffleruby.core.numeric.RubyBignum;
+import org.truffleruby.core.objectspace.ObjectSpaceManager;
+import org.truffleruby.core.proc.RubyProc;
 import org.truffleruby.core.rope.RopeOperations;
-import org.truffleruby.core.string.StringOperations;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.core.symbol.RubySymbol;
+import org.truffleruby.language.ImmutableRubyObject;
+import org.truffleruby.language.Nil;
 import org.truffleruby.language.NotProvided;
+import org.truffleruby.language.RubyDynamicObject;
 import org.truffleruby.language.RubyNode;
 import org.truffleruby.language.RubyRootNode;
 import org.truffleruby.language.RubySourceNode;
@@ -32,18 +42,18 @@ import org.truffleruby.language.Visibility;
 import org.truffleruby.language.arguments.ReadCallerFrameNode;
 import org.truffleruby.language.arguments.RubyArguments;
 import org.truffleruby.language.control.RaiseException;
-import org.truffleruby.language.dispatch.CallDispatchHeadNode;
+import org.truffleruby.language.dispatch.DispatchConfiguration;
+import org.truffleruby.language.dispatch.DispatchNode;
 import org.truffleruby.language.dispatch.RubyCallNode;
 import org.truffleruby.language.eval.CreateEvalSourceNode;
 import org.truffleruby.language.loader.CodeLoader;
 import org.truffleruby.language.methods.DeclarationContext;
 import org.truffleruby.language.methods.DeclarationContext.SingletonClassOfSelfDefaultDefinee;
 import org.truffleruby.language.methods.InternalMethod;
+import org.truffleruby.language.methods.LookupMethodNode;
 import org.truffleruby.language.methods.UnsupportedOperationBehavior;
-import org.truffleruby.language.objects.AllocateObjectNode;
+import org.truffleruby.language.objects.AllocateHelperNode;
 import org.truffleruby.language.objects.ObjectIDOperations;
-import org.truffleruby.language.objects.ReadObjectFieldNode;
-import org.truffleruby.language.objects.WriteObjectFieldNode;
 import org.truffleruby.language.supercall.SuperCallNode;
 import org.truffleruby.language.yield.CallBlockNode;
 import org.truffleruby.parser.ParserContext;
@@ -61,11 +71,14 @@ import com.oracle.truffle.api.frame.Frame;
 import com.oracle.truffle.api.frame.FrameInstance.FrameAccess;
 import com.oracle.truffle.api.frame.MaterializedFrame;
 import com.oracle.truffle.api.frame.VirtualFrame;
+import com.oracle.truffle.api.library.CachedLibrary;
 import com.oracle.truffle.api.nodes.IndirectCallNode;
 import com.oracle.truffle.api.nodes.Node;
 import com.oracle.truffle.api.nodes.NodeUtil;
-import com.oracle.truffle.api.object.DynamicObject;
+import com.oracle.truffle.api.object.DynamicObjectLibrary;
+import com.oracle.truffle.api.object.Shape;
 import com.oracle.truffle.api.profiles.ConditionProfile;
+
 
 @CoreModule(value = "BasicObject", isClass = true)
 public abstract class BasicObjectNodes {
@@ -84,7 +97,7 @@ public abstract class BasicObjectNodes {
     @CoreMethod(names = "!=", required = 1)
     public abstract static class NotEqualNode extends CoreMethodArrayArgumentsNode {
 
-        @Child private CallDispatchHeadNode equalNode = CallDispatchHeadNode.createPrivate();
+        @Child private DispatchNode equalNode = DispatchNode.create();
         @Child private BooleanCastNode booleanCastNode = BooleanCastNode.create();
 
         @Specialization
@@ -124,14 +137,14 @@ public abstract class BasicObjectNodes {
         }
 
         @Specialization
-        protected boolean equal(DynamicObject a, DynamicObject b) {
+        protected boolean equal(RubyDynamicObject a, RubyDynamicObject b) {
             return a == b;
         }
 
         @Specialization(
                 guards = {
-                        "isNotDynamicObject(a)",
-                        "isNotDynamicObject(b)",
+                        "isNotRubyDynamicObject(a)",
+                        "isNotRubyDynamicObject(b)",
                         "!sameClass(a, b)",
                         "isNotIntLong(a) || isNotIntLong(b)" })
         protected boolean equalIncompatiblePrimitiveTypes(Object a, Object b) {
@@ -140,26 +153,26 @@ public abstract class BasicObjectNodes {
 
         @Specialization(
                 guards = {
-                        "isNotDynamicObject(a)",
-                        "isNotDynamicObject(b)",
+                        "isNotRubyDynamicObject(a)",
+                        "isNotRubyDynamicObject(b)",
                         "sameClass(a, b)",
                         "isNotIntLongDouble(a) || isNotIntLongDouble(b)" })
         protected boolean equalOtherSameClass(Object a, Object b) {
             return a == b;
         }
 
-        @Specialization(guards = "isNotDynamicObject(a)")
-        protected boolean equal(Object a, DynamicObject b) {
+        @Specialization(guards = "isNotRubyDynamicObject(a)")
+        protected boolean equal(Object a, RubyDynamicObject b) {
             return false;
         }
 
-        @Specialization(guards = "isNotDynamicObject(b)")
-        protected boolean equal(DynamicObject a, Object b) {
+        @Specialization(guards = "isNotRubyDynamicObject(b)")
+        protected boolean equal(RubyDynamicObject a, Object b) {
             return false;
         }
 
-        protected boolean isNotDynamicObject(Object value) {
-            return !(value instanceof DynamicObject);
+        protected boolean isNotRubyDynamicObject(Object value) {
+            return !(value instanceof RubyDynamicObject);
         }
 
         protected boolean sameClass(Object a, Object b) {
@@ -186,10 +199,16 @@ public abstract class BasicObjectNodes {
             return BasicObjectNodesFactory.ObjectIDNodeFactory.create(null);
         }
 
-        public abstract Object executeObjectID(Object value);
+        public static ObjectIDNode getUncached() {
+            return BasicObjectNodesFactory.ObjectIDNodeFactory.getUncached();
+        }
 
-        @Specialization(guards = "isNil(nil)")
-        protected long objectIDNil(Object nil) {
+        public abstract Object execute(Object value);
+
+        public abstract long execute(RubyDynamicObject value);
+
+        @Specialization
+        protected long objectIDNil(Nil nil) {
             return ObjectIDOperations.NIL;
         }
 
@@ -215,49 +234,38 @@ public abstract class BasicObjectNodes {
 
         @Specialization(replaces = "objectIDSmallFixnumOverflow")
         protected Object objectIDLong(long value,
-                @Cached("createCountingProfile()") ConditionProfile smallProfile,
-                @CachedContext(RubyLanguage.class) RubyContext context) {
+                @Cached("createCountingProfile()") ConditionProfile smallProfile) {
             if (smallProfile.profile(ObjectIDOperations.isSmallFixnum(value))) {
                 return ObjectIDOperations.smallFixnumToID(value);
             } else {
-                return ObjectIDOperations.largeFixnumToID(context, value);
+                return ObjectIDOperations.largeFixnumToID(value);
             }
         }
 
         @Specialization
-        protected Object objectID(double value,
-                @CachedContext(RubyLanguage.class) RubyContext context) {
-            return ObjectIDOperations.floatToID(context, value);
+        protected RubyBignum objectID(double value) {
+            return ObjectIDOperations.floatToID(value);
         }
 
-        @Specialization
-        protected long objectID(RubySymbol symbol,
-                @CachedContext(RubyLanguage.class) RubyContext context) {
-            final long id = symbol.getObjectId();
+        @Specialization(guards = "!isNil(object)")
+        protected long objectIDImmutable(ImmutableRubyObject object,
+                @CachedLanguage RubyLanguage language) {
+            final long id = object.getObjectId();
 
             if (id == 0) {
-                final long newId = context.getObjectSpaceManager().getNextObjectID();
-                symbol.setObjectId(newId);
+                final long newId = language.getNextObjectID();
+                object.setObjectId(newId);
                 return newId;
             }
 
             return id;
         }
 
-        @Specialization
-        protected long objectID(DynamicObject object,
-                @Cached ReadObjectFieldNode readObjectIdNode,
-                @Cached WriteObjectFieldNode writeObjectIdNode,
+        @Specialization(limit = "getCacheLimit()")
+        protected long objectID(RubyDynamicObject object,
+                @CachedLibrary("object") DynamicObjectLibrary objectLibrary,
                 @CachedContext(RubyLanguage.class) RubyContext context) {
-            final long id = (long) readObjectIdNode.execute(object, Layouts.OBJECT_ID_IDENTIFIER, 0L);
-
-            if (id == 0) {
-                final long newId = context.getObjectSpaceManager().getNextObjectID();
-                writeObjectIdNode.write(object, Layouts.OBJECT_ID_IDENTIFIER, newId);
-                return newId;
-            }
-
-            return id;
+            return objectIDDynamicObject(context, object, objectLibrary);
         }
 
         @Specialization(guards = "isForeignObject(object)")
@@ -268,6 +276,41 @@ public abstract class BasicObjectNodes {
         @TruffleBoundary
         private int hashCode(Object object) {
             return object.hashCode();
+        }
+
+        /** Needed instead of an uncached node when the Context is not entered */
+        public static long uncachedObjectID(RubyContext context, RubyDynamicObject object) {
+            return objectIDDynamicObject(context, object, DynamicObjectLibrary.getUncached());
+        }
+
+        private static long objectIDDynamicObject(RubyContext context, RubyDynamicObject object,
+                DynamicObjectLibrary objectLibrary) {
+            final long id = ObjectSpaceManager.readObjectID(object, objectLibrary);
+
+            if (id == 0L) {
+                if (objectLibrary.isShared(object)) {
+                    synchronized (object) {
+                        final long existingID = ObjectSpaceManager.readObjectID(object, objectLibrary);
+                        if (existingID != 0L) {
+                            return existingID;
+                        } else {
+                            final long newId = context.getObjectSpaceManager().getNextObjectID();
+                            objectLibrary.putLong(object, Layouts.OBJECT_ID_IDENTIFIER, newId);
+                            return newId;
+                        }
+                    }
+                } else {
+                    final long newId = context.getObjectSpaceManager().getNextObjectID();
+                    objectLibrary.putLong(object, Layouts.OBJECT_ID_IDENTIFIER, newId);
+                    return newId;
+                }
+            }
+
+            return id;
+        }
+
+        protected int getCacheLimit() {
+            return RubyLanguage.getCurrentContext().getOptions().INSTANCE_VARIABLE_CACHE;
         }
     }
 
@@ -291,12 +334,12 @@ public abstract class BasicObjectNodes {
 
         @Child private CreateEvalSourceNode createEvalSourceNode = new CreateEvalSourceNode();
 
-        @Specialization(guards = { "isRubyString(string)", "isRubyString(fileName)" })
+        @Specialization
         protected Object instanceEval(
                 VirtualFrame frame,
                 Object receiver,
-                DynamicObject string,
-                DynamicObject fileName,
+                RubyString string,
+                RubyString fileName,
                 int line,
                 NotProvided block,
                 @Cached ReadCallerFrameNode callerFrameNode,
@@ -306,12 +349,12 @@ public abstract class BasicObjectNodes {
             return instanceEvalHelper(callerFrame, receiver, string, fileName, line, callNode);
         }
 
-        @Specialization(guards = { "isRubyString(string)", "isRubyString(fileName)" })
+        @Specialization
         protected Object instanceEval(
                 VirtualFrame frame,
                 Object receiver,
-                DynamicObject string,
-                DynamicObject fileName,
+                RubyString string,
+                RubyString fileName,
                 NotProvided line,
                 NotProvided block,
                 @Cached ReadCallerFrameNode callerFrameNode,
@@ -321,11 +364,11 @@ public abstract class BasicObjectNodes {
             return instanceEvalHelper(callerFrame, receiver, string, fileName, 1, callNode);
         }
 
-        @Specialization(guards = { "isRubyString(string)" })
+        @Specialization
         protected Object instanceEval(
                 VirtualFrame frame,
                 Object receiver,
-                DynamicObject string,
+                RubyString string,
                 NotProvided fileName,
                 NotProvided line,
                 NotProvided block,
@@ -337,7 +380,7 @@ public abstract class BasicObjectNodes {
                     callerFrame,
                     receiver,
                     string,
-                    coreStrings().EVAL_FILENAME_STRING.createInstance(),
+                    coreStrings().EVAL_FILENAME_STRING.createInstance(getContext()),
                     1,
                     callNode);
         }
@@ -348,18 +391,18 @@ public abstract class BasicObjectNodes {
                 NotProvided string,
                 NotProvided fileName,
                 NotProvided line,
-                DynamicObject block,
+                RubyProc block,
                 @Cached InstanceExecNode instanceExecNode) {
             return instanceExecNode.executeInstanceExec(receiver, new Object[]{ receiver }, block);
         }
 
         @TruffleBoundary
-        private Object instanceEvalHelper(MaterializedFrame callerFrame, Object receiver, DynamicObject string,
-                DynamicObject fileName, int line, IndirectCallNode callNode) {
-            final String fileNameString = RopeOperations.decodeRope(StringOperations.rope(fileName));
+        private Object instanceEvalHelper(MaterializedFrame callerFrame, Object receiver, RubyString string,
+                RubyString fileName, int line, IndirectCallNode callNode) {
+            final String fileNameString = RopeOperations.decodeRope(fileName.rope);
 
             final RubySource source = createEvalSourceNode
-                    .createEvalSource(StringOperations.rope(string), "instance_eval", fileNameString, line);
+                    .createEvalSource(string.rope, "instance_eval", fileNameString, line);
 
             final RubyRootNode rootNode = getContext().getCodeLoader().parse(
                     source,
@@ -394,16 +437,16 @@ public abstract class BasicObjectNodes {
 
         @Child private CallBlockNode callBlockNode = CallBlockNode.create();
 
-        abstract Object executeInstanceExec(Object self, Object[] args, DynamicObject block);
+        abstract Object executeInstanceExec(Object self, Object[] args, RubyProc block);
 
         @Specialization
-        protected Object instanceExec(Object receiver, Object[] arguments, DynamicObject block) {
+        protected Object instanceExec(Object receiver, Object[] arguments, RubyProc block) {
             final DeclarationContext declarationContext = new DeclarationContext(
                     Visibility.PUBLIC,
                     new SingletonClassOfSelfDefaultDefinee(receiver),
-                    Layouts.PROC.getDeclarationContext(block).getRefinements());
+                    block.declarationContext.getRefinements());
             return callBlockNode
-                    .executeCallBlock(declarationContext, block, receiver, Layouts.PROC.getBlock(block), arguments);
+                    .executeCallBlock(declarationContext, block, receiver, block.block, arguments);
         }
 
         @Specialization
@@ -427,11 +470,11 @@ public abstract class BasicObjectNodes {
         }
 
         @Specialization(guards = "wasProvided(name)")
-        protected Object methodMissingBlock(Object self, Object name, Object[] args, DynamicObject block) {
+        protected Object methodMissingBlock(Object self, Object name, Object[] args, RubyProc block) {
             return methodMissing(self, name, args, block);
         }
 
-        private Object methodMissing(Object self, Object nameObject, Object[] args, DynamicObject block) {
+        private Object methodMissing(Object self, Object nameObject, Object[] args, RubyProc block) {
             throw new RaiseException(getContext(), buildMethodMissingException(self, nameObject, args, block));
         }
 
@@ -446,8 +489,8 @@ public abstract class BasicObjectNodes {
         }
 
         @TruffleBoundary
-        private DynamicObject buildMethodMissingException(Object self, Object nameObject, Object[] args,
-                DynamicObject block) {
+        private RubyException buildMethodMissingException(Object self, Object nameObject, Object[] args,
+                RubyProc block) {
             final String name;
             if (nameObject instanceof RubySymbol) {
                 name = ((RubySymbol) nameObject).getString();
@@ -457,7 +500,7 @@ public abstract class BasicObjectNodes {
             final FrameAndCallNode relevantCallerFrame = getRelevantCallerFrame();
             Visibility visibility;
 
-            final DynamicObject formatter;
+            final RubyProc formatter;
             if (lastCallWasSuper(relevantCallerFrame)) {
                 formatter = ExceptionOperations.getFormatter(ExceptionOperations.SUPER_METHOD_ERROR, getContext());
                 return coreExceptions().noMethodErrorFromMethodMissing(formatter, self, name, args, this);
@@ -465,7 +508,7 @@ public abstract class BasicObjectNodes {
                     self,
                     name,
                     relevantCallerFrame)) != null) {
-                if (visibility.isPrivate()) {
+                if (visibility == Visibility.PRIVATE) {
                     formatter = ExceptionOperations
                             .getFormatter(ExceptionOperations.PRIVATE_METHOD_ERROR, getContext());
                     return coreExceptions().noMethodErrorFromMethodMissing(formatter, self, name, args, this);
@@ -519,15 +562,14 @@ public abstract class BasicObjectNodes {
             return superCallNode != null;
         }
 
-        /** See {@link org.truffleruby.language.dispatch.DispatchNode#lookup}. The only way to fail if method is not
-         * null and not undefined is visibility. */
+        /** See {@link LookupMethodNode}. The only way to fail if method is not null and not undefined is visibility. */
         private Visibility lastCallWasCallingPrivateOrProtectedMethod(Object self, String name,
                 FrameAndCallNode callerFrame) {
             final DeclarationContext declarationContext = RubyArguments.tryGetDeclarationContext(callerFrame.frame);
             final InternalMethod method = ModuleOperations
                     .lookupMethodUncached(coreLibrary().getMetaClass(self), name, declarationContext);
             if (method != null && !method.isUndefined()) {
-                assert method.getVisibility().isPrivate() || method.getVisibility().isProtected();
+                assert method.getVisibility() == Visibility.PRIVATE || method.getVisibility() == Visibility.PROTECTED;
                 return method.getVisibility();
             }
             return null;
@@ -543,20 +585,21 @@ public abstract class BasicObjectNodes {
     @CoreMethod(names = "__send__", needsBlock = true, rest = true, required = 1)
     public abstract static class SendNode extends CoreMethodArrayArgumentsNode {
 
-        @Child private CallDispatchHeadNode dispatchNode = CallDispatchHeadNode.createPrivate();
+        @Child private DispatchNode dispatchNode = DispatchNode.create(DispatchConfiguration.PRIVATE);
         @Child private ReadCallerFrameNode readCallerFrame = ReadCallerFrameNode.create();
+        @Child private NameToJavaStringNode nameToJavaString = NameToJavaStringNode.create();
 
         @Specialization
         protected Object send(VirtualFrame frame, Object self, Object name, Object[] args, NotProvided block) {
-            return send(frame, self, name, args, (DynamicObject) null);
+            return send(frame, self, name, args, (RubyProc) null);
         }
 
         @Specialization
-        protected Object send(VirtualFrame frame, Object self, Object name, Object[] args, DynamicObject block) {
+        protected Object send(VirtualFrame frame, Object self, Object name, Object[] args, RubyProc block) {
             DeclarationContext context = RubyArguments.getDeclarationContext(readCallerFrame.execute(frame));
             RubyArguments.setDeclarationContext(frame, context);
 
-            return dispatchNode.dispatch(frame, self, name, block, args);
+            return dispatchNode.dispatch(frame, self, nameToJavaString.execute(name), block, args);
         }
 
     }
@@ -567,11 +610,14 @@ public abstract class BasicObjectNodes {
     @CoreMethod(names = { "__allocate__", "__layout_allocate__" }, constructor = true, visibility = Visibility.PRIVATE)
     public abstract static class AllocateNode extends CoreMethodArrayArgumentsNode {
 
-        @Child private AllocateObjectNode allocateObjectNode = AllocateObjectNode.create();
-
         @Specialization
-        protected DynamicObject allocate(DynamicObject rubyClass) {
-            return allocateObjectNode.allocate(rubyClass);
+        protected RubyBasicObject allocate(RubyClass rubyClass,
+                @Cached AllocateHelperNode allocateHelperNode,
+                @CachedLanguage RubyLanguage language) {
+            final Shape shape = allocateHelperNode.getCachedShape(rubyClass);
+            final RubyBasicObject instance = new RubyBasicObject(rubyClass, shape);
+            allocateHelperNode.trace(instance, this, language);
+            return instance;
         }
 
     }

@@ -40,9 +40,9 @@ package org.truffleruby.core;
 import java.io.PrintStream;
 import java.util.Map.Entry;
 
+import com.oracle.truffle.api.dsl.CachedLanguage;
 import org.jcodings.specific.ASCIIEncoding;
 import org.jcodings.specific.UTF8Encoding;
-import org.truffleruby.Layouts;
 import org.truffleruby.RubyContext;
 import org.truffleruby.RubyLanguage;
 import org.truffleruby.builtins.CoreModule;
@@ -51,19 +51,29 @@ import org.truffleruby.builtins.PrimitiveArrayArgumentsNode;
 import org.truffleruby.core.basicobject.BasicObjectNodes.ReferenceEqualNode;
 import org.truffleruby.core.cast.NameToJavaStringNode;
 import org.truffleruby.core.cast.ToRubyIntegerNode;
+import org.truffleruby.core.exception.RubyException;
 import org.truffleruby.core.fiber.FiberManager;
+import org.truffleruby.core.klass.RubyClass;
+import org.truffleruby.core.method.RubyMethod;
+import org.truffleruby.core.module.RubyModule;
 import org.truffleruby.core.numeric.BigIntegerOps;
+import org.truffleruby.core.numeric.RubyBignum;
 import org.truffleruby.core.proc.ProcOperations;
+import org.truffleruby.core.proc.RubyProc;
 import org.truffleruby.core.rope.CodeRange;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.core.string.StringNodes.MakeStringNode;
-import org.truffleruby.core.string.StringOperations;
+import org.truffleruby.core.thread.RubyThread;
 import org.truffleruby.core.thread.ThreadManager;
+import org.truffleruby.language.RubyDynamicObject;
 import org.truffleruby.language.backtrace.Backtrace;
+import org.truffleruby.language.backtrace.BacktraceFormatter;
 import org.truffleruby.language.control.ExitException;
 import org.truffleruby.language.control.RaiseException;
 import org.truffleruby.language.control.ThrowException;
 import org.truffleruby.language.methods.InternalMethod;
-import org.truffleruby.language.methods.LookupMethodNode;
+import org.truffleruby.language.methods.LookupMethodOnSelfNode;
+import org.truffleruby.language.objects.AllocateHelperNode;
 import org.truffleruby.language.objects.MetaClassNode;
 import org.truffleruby.language.objects.shared.SharedObjects;
 import org.truffleruby.language.yield.YieldNode;
@@ -75,11 +85,11 @@ import com.oracle.truffle.api.TruffleContext;
 import com.oracle.truffle.api.dsl.Cached;
 import com.oracle.truffle.api.dsl.Specialization;
 import com.oracle.truffle.api.frame.VirtualFrame;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.BranchProfile;
 import com.oracle.truffle.api.profiles.ConditionProfile;
 
 import sun.misc.Signal;
+import sun.misc.SignalHandler;
 
 @CoreModule(value = "VMPrimitives", isClass = true)
 public abstract class VMPrimitiveNodes {
@@ -88,7 +98,7 @@ public abstract class VMPrimitiveNodes {
     public abstract static class CatchNode extends PrimitiveArrayArgumentsNode {
 
         @Specialization
-        protected Object doCatch(Object tag, DynamicObject block,
+        protected Object doCatch(Object tag, RubyProc block,
                 @Cached BranchProfile catchProfile,
                 @Cached ConditionProfile matchProfile,
                 @Cached ReferenceEqualNode referenceEqualNode,
@@ -121,14 +131,14 @@ public abstract class VMPrimitiveNodes {
     public static abstract class VMExtendedModulesNode extends PrimitiveArrayArgumentsNode {
 
         @Specialization
-        protected Object vmExtendedModules(Object object, DynamicObject block,
+        protected Object vmExtendedModules(Object object, RubyProc block,
                 @Cached MetaClassNode metaClassNode,
                 @Cached YieldNode yieldNode,
                 @Cached ConditionProfile isSingletonProfile) {
-            final DynamicObject metaClass = metaClassNode.executeMetaClass(object);
+            final RubyClass metaClass = metaClassNode.execute(object);
 
-            if (isSingletonProfile.profile(Layouts.CLASS.getIsSingleton(metaClass))) {
-                for (DynamicObject included : Layouts.MODULE.getFields(metaClass).prependedAndIncludedModules()) {
+            if (isSingletonProfile.profile(metaClass.isSingleton)) {
+                for (RubyModule included : metaClass.fields.prependedAndIncludedModules()) {
                     yieldNode.executeDispatch(block, included);
                 }
             }
@@ -142,8 +152,8 @@ public abstract class VMPrimitiveNodes {
     public static abstract class VMMethodIsBasicNode extends PrimitiveArrayArgumentsNode {
 
         @Specialization
-        protected boolean vmMethodIsBasic(DynamicObject method) {
-            return Layouts.METHOD.getMethod(method).isBuiltIn();
+        protected boolean vmMethodIsBasic(RubyMethod method) {
+            return method.method.isBuiltIn();
         }
 
     }
@@ -151,17 +161,26 @@ public abstract class VMPrimitiveNodes {
     @Primitive(name = "vm_method_lookup")
     public static abstract class VMMethodLookupNode extends PrimitiveArrayArgumentsNode {
 
+        @Child private AllocateHelperNode allocateNode = AllocateHelperNode.create();
+
         @Specialization
         protected Object vmMethodLookup(VirtualFrame frame, Object receiver, Object name,
                 @Cached NameToJavaStringNode nameToJavaStringNode,
-                @Cached LookupMethodNode lookupMethodNode) {
+                @Cached LookupMethodOnSelfNode lookupMethodNode,
+                @CachedLanguage RubyLanguage language) {
             // TODO BJF Sep 14, 2016 Handle private
-            final String normalizedName = nameToJavaStringNode.executeToJavaString(name);
+            final String normalizedName = nameToJavaStringNode.execute(name);
             InternalMethod method = lookupMethodNode.lookupIgnoringVisibility(frame, receiver, normalizedName);
             if (method == null) {
                 return nil;
             }
-            return Layouts.METHOD.createMethod(coreLibrary().methodFactory, receiver, method);
+            final RubyMethod instance = new RubyMethod(
+                    coreLibrary().methodClass,
+                    RubyLanguage.methodShape,
+                    receiver,
+                    method);
+            allocateNode.trace(instance, this, language);
+            return instance;
         }
 
     }
@@ -169,10 +188,10 @@ public abstract class VMPrimitiveNodes {
     @Primitive(name = "vm_raise_exception")
     public static abstract class VMRaiseExceptionNode extends PrimitiveArrayArgumentsNode {
 
-        @Specialization(guards = "isRubyException(exception)")
-        protected DynamicObject vmRaiseException(DynamicObject exception,
+        @Specialization
+        protected Object vmRaiseException(RubyException exception,
                 @Cached ConditionProfile reRaiseProfile) {
-            final Backtrace backtrace = Layouts.EXCEPTION.getBacktrace(exception);
+            final Backtrace backtrace = exception.backtrace;
             if (reRaiseProfile.profile(backtrace != null && backtrace.getRaiseException() != null)) {
                 // We need to rethrow the existing RaiseException, otherwise we would lose the
                 // TruffleStackTrace stored in it.
@@ -187,8 +206,8 @@ public abstract class VMPrimitiveNodes {
             }
         }
 
-        public static void reRaiseException(RubyContext context, DynamicObject exception) {
-            final Backtrace backtrace = Layouts.EXCEPTION.getBacktrace(exception);
+        public static void reRaiseException(RubyContext context, RubyException exception) {
+            final Backtrace backtrace = exception.backtrace;
             if (backtrace != null && backtrace.getRaiseException() != null) {
                 // We need to rethrow the existing RaiseException, otherwise we would lose the
                 // TruffleStackTrace stored in it.
@@ -214,26 +233,26 @@ public abstract class VMPrimitiveNodes {
     public static abstract class VMWatchSignalNode extends PrimitiveArrayArgumentsNode {
 
         @TruffleBoundary
-        @Specialization(guards = { "isRubyString(signalName)", "isRubyString(action)" })
-        protected boolean restoreDefault(DynamicObject signalName, DynamicObject action) {
-            final String actionString = StringOperations.getString(action);
-            final String signal = StringOperations.getString(signalName);
+        @Specialization
+        protected boolean restoreDefault(RubyString signalString, RubyString action) {
+            final String actionString = action.getJavaString();
+            final String signalName = signalString.getJavaString();
 
             switch (actionString) {
                 case "DEFAULT":
-                    return restoreDefaultHandler(signal);
+                    return restoreDefaultHandler(signalName);
                 case "SYSTEM_DEFAULT":
-                    return restoreSystemHandler(signal);
+                    return restoreSystemHandler(signalName);
                 case "IGNORE":
-                    return registerIgnoreHandler(signal);
+                    return registerIgnoreHandler(signalName);
                 default:
                     throw new UnsupportedOperationException(actionString);
             }
         }
 
         @TruffleBoundary
-        @Specialization(guards = { "isRubyString(signalName)", "isRubyProc(action)" })
-        protected boolean watchSignalProc(DynamicObject signalName, DynamicObject action) {
+        @Specialization
+        protected boolean watchSignalProc(RubyString signalString, RubyProc action) {
             if (getContext().getThreadManager().getCurrentThread() != getContext().getThreadManager().getRootThread()) {
                 // The proc will be executed on the main thread
                 SharedObjects.writeBarrier(getContext(), action);
@@ -241,17 +260,17 @@ public abstract class VMPrimitiveNodes {
 
             final RubyContext context = getContext();
 
-            final String signal = StringOperations.getString(signalName);
-            return registerHandler(signal, () -> {
+            String signalName = signalString.getJavaString();
+            return registerHandler(signalName, signal -> {
                 if (context.getOptions().SINGLE_THREADED) {
                     RubyLanguage.LOGGER.severe(
                             "signal " + signal + " caught but can't create a thread to handle it so ignoring");
                     return;
                 }
 
-                final DynamicObject rootThread = context.getThreadManager().getRootThread();
-                final FiberManager fiberManager = Layouts.THREAD.getFiberManager(rootThread);
-                final ThreadManager threadManager = getContext().getThreadManager();
+                final RubyThread rootThread = context.getThreadManager().getRootThread();
+                final FiberManager fiberManager = rootThread.fiberManager;
+                final ThreadManager threadManager = context.getThreadManager();
 
                 // Workaround: we need to register with Truffle (which means going multithreaded),
                 // so that NFI can get its context to call pthread_kill() (GR-7405).
@@ -261,13 +280,13 @@ public abstract class VMPrimitiveNodes {
                     prev = truffleContext.enter();
                 } catch (IllegalStateException e) { // Multi threaded access denied from Truffle
                     // Not in a context, so we cannot use TruffleLogger
-                    final PrintStream printStream = new PrintStream(context.getEnv().err(), true);
+                    final PrintStream printStream = BacktraceFormatter.printStreamFor(context.getEnv().err());
                     printStream.println(
                             "[ruby] SEVERE: signal " + signal +
                                     " caught but can't attach a thread to handle it so restoring the default handler and re-raising the signal");
-                    Signals.restoreDefaultHandler(signal);
+                    Signals.restoreDefaultHandler(signalName);
                     try {
-                        Signal.raise(new Signal(signal));
+                        Signal.raise(signal);
                     } catch (IllegalArgumentException illegalArgumentException) {
                         illegalArgumentException.printStackTrace(printStream);
                     }
@@ -275,6 +294,7 @@ public abstract class VMPrimitiveNodes {
                 }
                 try {
                     context.getSafepointManager().pauseAllThreadsAndExecuteFromNonRubyThread(
+                            "Handling of signal " + signal,
                             true,
                             (rubyThread, currentNode) -> {
                                 if (rubyThread == rootThread &&
@@ -337,7 +357,7 @@ public abstract class VMPrimitiveNodes {
         }
 
         @TruffleBoundary
-        private boolean registerHandler(String signalName, Runnable newHandler) {
+        private boolean registerHandler(String signalName, SignalHandler newHandler) {
             if (getContext().getOptions().EMBEDDED) {
                 RubyLanguage.LOGGER.warning(
                         "trapping signal " + signalName +
@@ -358,9 +378,9 @@ public abstract class VMPrimitiveNodes {
     public abstract static class VMGetConfigItemNode extends PrimitiveArrayArgumentsNode {
 
         @TruffleBoundary
-        @Specialization(guards = "isRubyString(key)")
-        protected Object get(DynamicObject key) {
-            final Object value = getContext().getNativeConfiguration().get(StringOperations.getString(key));
+        @Specialization
+        protected Object get(RubyString key) {
+            final Object value = getContext().getNativeConfiguration().get(key.getJavaString());
 
             if (value == null) {
                 return nil;
@@ -375,14 +395,14 @@ public abstract class VMPrimitiveNodes {
     public abstract static class VMGetConfigSectionNode extends PrimitiveArrayArgumentsNode {
 
         @TruffleBoundary
-        @Specialization(guards = { "isRubyString(section)", "isRubyProc(block)" })
-        protected Object getSection(DynamicObject section, DynamicObject block,
+        @Specialization
+        protected Object getSection(RubyString section, RubyProc block,
                 @Cached MakeStringNode makeStringNode,
                 @Cached YieldNode yieldNode) {
             for (Entry<String, Object> entry : getContext()
                     .getNativeConfiguration()
-                    .getSection(StringOperations.getString(section))) {
-                final DynamicObject key = makeStringNode
+                    .getSection(section.getJavaString())) {
+                final RubyString key = makeStringNode
                         .executeMake(entry.getKey(), UTF8Encoding.INSTANCE, CodeRange.CR_7BIT);
                 yieldNode.executeDispatch(block, key, entry.getValue());
             }
@@ -395,12 +415,12 @@ public abstract class VMPrimitiveNodes {
     @Primitive(name = "vm_set_class")
     public abstract static class VMSetClassNode extends PrimitiveArrayArgumentsNode {
 
-        @Specialization(guards = "isRubyClass(newClass)")
-        protected DynamicObject setClass(DynamicObject object, DynamicObject newClass) {
+        @TruffleBoundary
+        @Specialization
+        protected RubyDynamicObject setClass(RubyDynamicObject object, RubyClass newClass) {
             SharedObjects.propagate(getContext(), object, newClass);
             synchronized (object) {
-                Layouts.BASIC_OBJECT.setLogicalClass(object, newClass);
-                Layouts.BASIC_OBJECT.setMetaClass(object, newClass);
+                object.setMetaClass(newClass);
             }
             return object;
         }
@@ -411,7 +431,7 @@ public abstract class VMPrimitiveNodes {
     public abstract static class VMDevUrandomBytes extends PrimitiveArrayArgumentsNode {
 
         @Specialization(guards = "count >= 0")
-        protected DynamicObject readRandomBytes(int count,
+        protected RubyString readRandomBytes(int count,
                 @Cached MakeStringNode makeStringNode) {
             final byte[] bytes = getContext().getRandomSeedBytes(count);
 
@@ -419,7 +439,7 @@ public abstract class VMPrimitiveNodes {
         }
 
         @Specialization(guards = "count < 0")
-        protected DynamicObject negativeCount(int count) {
+        protected RubyString negativeCount(int count) {
             throw new RaiseException(
                     getContext(),
                     getContext().getCoreExceptions().argumentError(
@@ -437,8 +457,8 @@ public abstract class VMPrimitiveNodes {
             return getContext().getHashing(this).start(salt);
         }
 
-        @Specialization(guards = "isRubyBignum(salt)")
-        protected long startHashBigNum(DynamicObject salt) {
+        @Specialization
+        protected long startHashBigNum(RubyBignum salt) {
             return getContext().getHashing(this).start(BigIntegerOps.hashCode(salt));
         }
 
@@ -453,8 +473,8 @@ public abstract class VMPrimitiveNodes {
                 return getContext().getHashing(this).start((int) result);
             } else if (isLongProfile.profile(result instanceof Long)) {
                 return getContext().getHashing(this).start((long) result);
-            } else if (isBignumProfile.profile(Layouts.BIGNUM.isBignum(result))) {
-                return getContext().getHashing(this).start(BigIntegerOps.hashCode(result));
+            } else if (isBignumProfile.profile(result instanceof RubyBignum)) {
+                return getContext().getHashing(this).start(BigIntegerOps.hashCode((RubyBignum) result));
             } else {
                 throw CompilerDirectives.shouldNotReachHere();
             }
@@ -470,8 +490,8 @@ public abstract class VMPrimitiveNodes {
             return Hashing.update(hash, value);
         }
 
-        @Specialization(guards = "isRubyBignum(value)")
-        protected long updateHash(long hash, DynamicObject value) {
+        @Specialization
+        protected long updateHash(long hash, RubyBignum value) {
             return Hashing.update(hash, BigIntegerOps.hashCode(value));
         }
 
@@ -486,8 +506,8 @@ public abstract class VMPrimitiveNodes {
                 return Hashing.update(hash, (int) result);
             } else if (isLongProfile.profile(result instanceof Long)) {
                 return Hashing.update(hash, (long) result);
-            } else if (isBignumProfile.profile(Layouts.BIGNUM.isBignum(result))) {
-                return Hashing.update(hash, BigIntegerOps.hashCode(result));
+            } else if (isBignumProfile.profile(result instanceof RubyBignum)) {
+                return Hashing.update(hash, BigIntegerOps.hashCode((RubyBignum) result));
             } else {
                 throw CompilerDirectives.shouldNotReachHere();
             }

@@ -42,13 +42,14 @@ import java.util.List;
 
 import org.jcodings.specific.UTF8Encoding;
 import org.truffleruby.RubyContext;
+import org.truffleruby.RubyLanguage;
 import org.truffleruby.aot.ParserCache;
 import org.truffleruby.collections.Memo;
-import org.truffleruby.core.LoadRequiredLibrariesNode;
 import org.truffleruby.core.kernel.AutoSplitNode;
 import org.truffleruby.core.kernel.ChompLoopNode;
 import org.truffleruby.core.kernel.KernelGetsNode;
 import org.truffleruby.core.kernel.KernelPrintLastLineNode;
+import org.truffleruby.core.module.RubyModule;
 import org.truffleruby.language.DataNode;
 import org.truffleruby.language.LexicalScope;
 import org.truffleruby.language.RubyNode;
@@ -60,7 +61,6 @@ import org.truffleruby.language.arguments.ReadPreArgumentNode;
 import org.truffleruby.language.arguments.RubyArguments;
 import org.truffleruby.language.control.RaiseException;
 import org.truffleruby.language.control.WhileNode;
-import org.truffleruby.language.exceptions.TopLevelRaiseHandler;
 import org.truffleruby.language.locals.WriteLocalVariableNode;
 import org.truffleruby.language.methods.Arity;
 import org.truffleruby.language.methods.CatchForMethodNode;
@@ -70,7 +70,9 @@ import org.truffleruby.language.methods.CatchReturnAsErrorNode;
 import org.truffleruby.language.methods.ExceptionTranslatingNode;
 import org.truffleruby.language.methods.InternalMethod;
 import org.truffleruby.language.methods.SharedMethodInfo;
+import org.truffleruby.language.methods.Split;
 import org.truffleruby.language.methods.UnsupportedOperationBehavior;
+import org.truffleruby.language.threadlocal.MakeSpecialVariableStorageNode;
 import org.truffleruby.parser.ast.RootParseNode;
 import org.truffleruby.parser.lexer.LexerSource;
 import org.truffleruby.parser.lexer.SyntaxException;
@@ -84,7 +86,6 @@ import com.oracle.truffle.api.frame.FrameInstance.FrameAccess;
 import com.oracle.truffle.api.frame.FrameSlot;
 import com.oracle.truffle.api.frame.MaterializedFrame;
 import com.oracle.truffle.api.nodes.Node;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.source.Source;
 import com.oracle.truffle.api.source.SourceSection;
 
@@ -92,15 +93,17 @@ public class TranslatorDriver {
 
     /** May be null, see {@link ParserCache#parse} */
     private final RubyContext context;
+    private final RubyLanguage language;
     private final ParseEnvironment parseEnvironment;
 
     public TranslatorDriver(RubyContext context) {
         this.context = context;
+        this.language = context.getLanguageSlow();
         parseEnvironment = new ParseEnvironment(context);
     }
 
     public RubyRootNode parse(RubySource rubySource, ParserContext parserContext, String[] argumentNames,
-            MaterializedFrame parentFrame, DynamicObject wrap, boolean ownScopeForAssignments, Node currentNode) {
+            MaterializedFrame parentFrame, RubyModule wrap, boolean ownScopeForAssignments, Node currentNode) {
         assert parserContext
                 .isTopLevel() == (parentFrame == null) : "A frame should be given iff the context is not toplevel: " +
                         parserContext + " " + parentFrame;
@@ -173,7 +176,7 @@ public class TranslatorDriver {
             node = context.getMetricsProfiler().callWithMetrics(
                     "parsing",
                     source.getName(),
-                    () -> parseToJRubyAST(rubySource, staticScope, parserConfiguration));
+                    () -> parseToJRubyAST(context, rubySource, staticScope, parserConfiguration));
             printParseTranslateExecuteMetric("after-parsing", context, source);
         }
 
@@ -193,7 +196,7 @@ public class TranslatorDriver {
         }
         if (parserContext == ParserContext.MODULE) {
             Object module = RubyArguments.getSelf(context.getCallStack().getCurrentFrame(FrameAccess.READ_ONLY));
-            lexicalScope = new LexicalScope(lexicalScope, (DynamicObject) module);
+            lexicalScope = new LexicalScope(lexicalScope, (RubyModule) module);
         }
         parseEnvironment.resetLexicalScope(lexicalScope);
         parseEnvironment.allowTruffleRubyPrimitives = parserConfiguration.allowTruffleRubyPrimitives;
@@ -207,8 +210,7 @@ public class TranslatorDriver {
                 methodName,
                 0,
                 null,
-                null,
-                false);
+                null);
 
         final boolean topLevel = parserContext.isTopLevel();
         final boolean isModuleBody = topLevel;
@@ -235,7 +237,10 @@ public class TranslatorDriver {
 
         // Translate to Ruby Truffle nodes
 
-        context.getCoverageManager().loadingSource(source);
+        // Like MRI, do not track coverage of eval's. This also avoids having to merge multiple Sources with the same RubyContext.getPath().
+        if (!rubySource.isEval()) {
+            context.getCoverageManager().loadingSource(source);
+        }
 
         final BodyTranslator translator = new BodyTranslator(
                 context,
@@ -264,17 +269,15 @@ public class TranslatorDriver {
         RubyNode beginNode = beginNodeMemo.get();
 
         // Load arguments
-
-        final RubyNode writeSelfNode = Translator.loadSelf(context, environment);
-        truffleNode = Translator.sequence(sourceIndexLength, Arrays.asList(writeSelfNode, truffleNode));
-
         if (argumentNames != null && argumentNames.length > 0) {
             final List<RubyNode> sequence = new ArrayList<>();
 
             for (int n = 0; n < argumentNames.length; n++) {
                 final String name = argumentNames[n];
                 final RubyNode readNode = Translator
-                        .profileArgument(context, new ReadPreArgumentNode(n, MissingArgumentBehavior.NIL));
+                        .profileArgument(
+                                language,
+                                new ReadPreArgumentNode(n, MissingArgumentBehavior.NIL));
                 final FrameSlot slot = environment.getFrameDescriptor().findFrameSlot(name);
                 sequence.add(new WriteLocalVariableNode(slot, readNode));
             }
@@ -317,6 +320,9 @@ public class TranslatorDriver {
                     Arrays.asList(beginNode, truffleNode));
         }
 
+        final RubyNode writeSelfNode = Translator.loadSelf(language, environment);
+        truffleNode = Translator.sequence(sourceIndexLength, Arrays.asList(writeSelfNode, truffleNode));
+
         // Catch next
 
         truffleNode = new CatchNextNode(truffleNode);
@@ -336,21 +342,23 @@ public class TranslatorDriver {
         // Top-level exception handling
 
         if (parserContext == ParserContext.TOP_LEVEL_FIRST) {
-            truffleNode = Translator.sequence(sourceIndexLength, Arrays.asList(
-                    new LoadRequiredLibrariesNode(),
-                    new SetTopLevelBindingNode(),
-                    truffleNode));
+            truffleNode = Translator
+                    .sequence(sourceIndexLength, Arrays.asList(
+                            new SetTopLevelBindingNode(),
+                            truffleNode));
 
             if (node.hasEndPosition()) {
                 truffleNode = Translator.sequence(sourceIndexLength, Arrays.asList(
                         new DataNode(node.getEndPosition()),
                         truffleNode));
             }
+        }
 
-            truffleNode = new ExceptionTranslatingNode(truffleNode, UnsupportedOperationBehavior.TYPE_ERROR);
-            truffleNode = new TopLevelRaiseHandler(truffleNode);
-        } else {
-            truffleNode = new ExceptionTranslatingNode(truffleNode, UnsupportedOperationBehavior.TYPE_ERROR);
+        truffleNode = new ExceptionTranslatingNode(truffleNode, UnsupportedOperationBehavior.TYPE_ERROR);
+
+        if (parserContext.isTopLevel()) {
+            truffleNode = Translator
+                    .sequence(sourceIndexLength, Arrays.asList(new MakeSpecialVariableStorageNode(), truffleNode));
         }
 
         return new RubyRootNode(
@@ -359,7 +367,7 @@ public class TranslatorDriver {
                 environment.getFrameDescriptor(),
                 sharedMethodInfo,
                 truffleNode,
-                true);
+                Split.HEURISTIC);
     }
 
     private String getMethodName(ParserContext parserContext, MaterializedFrame parentFrame) {
@@ -378,7 +386,7 @@ public class TranslatorDriver {
         }
     }
 
-    public RootParseNode parseToJRubyAST(RubySource rubySource, StaticScope blockScope,
+    public static RootParseNode parseToJRubyAST(RubyContext context, RubySource rubySource, StaticScope blockScope,
             ParserConfiguration configuration) {
         LexerSource lexerSource = new LexerSource(rubySource, configuration.getDefaultEncoding());
         // We only need to pass in current scope if we are evaluating as a block (which
@@ -406,7 +414,7 @@ public class TranslatorDriver {
                 default:
                     StringBuilder buffer = new StringBuilder(100);
                     buffer.append(e.getFile()).append(':');
-                    buffer.append(e.getLine()).append(": ");
+                    buffer.append(e.getLine() + rubySource.getLineOffset()).append(": ");
                     buffer.append(e.getMessage());
 
                     if (context != null) {
@@ -437,8 +445,7 @@ public class TranslatorDriver {
                     null,
                     0,
                     "external",
-                    null,
-                    false);
+                    null);
             final MaterializedFrame parent = RubyArguments.getDeclarationFrame(frame);
             // TODO(CS): how do we know if the frame is a block or not?
             return new TranslatorEnvironment(
@@ -459,7 +466,7 @@ public class TranslatorDriver {
     public static void printParseTranslateExecuteMetric(String id, RubyContext context, Source source) {
         if (Metrics.getMetricsTime()) {
             if (context.getOptions().METRICS_TIME_PARSING_FILE) {
-                String name = RubyContext.getPath(source);
+                String name = context.getSourcePath(source);
                 int lastSlash = name.lastIndexOf('/');
                 int lastDot = name.lastIndexOf('.');
                 if (lastSlash >= 0 && lastDot >= 0 && lastSlash + 1 < lastDot) {

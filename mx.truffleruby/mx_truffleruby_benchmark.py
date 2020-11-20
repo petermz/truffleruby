@@ -245,6 +245,9 @@ class TimeBenchmarkSuite(MetricsBenchmarkSuite):
         } for region, region_data in data.items() for n, sample in enumerate(region_data['samples'])]
 
 class AllBenchmarksBenchmarkSuite(RubyBenchmarkSuite):
+    def config(self):
+        return {'kind': 'simple'}
+
     def benchmarkList(self, bmSuiteArgs):
         raise NotImplementedError()
 
@@ -261,24 +264,48 @@ class AllBenchmarksBenchmarkSuite(RubyBenchmarkSuite):
         data = []
         for line in lines:
             try:
-                data.append(float(line))
+                data.append(int(line))
             except ValueError:
-                mx.log_error(line)
+                try:
+                    data.append(float(line))
+                except ValueError:
+                    mx.log_error(line)
         if len(data) % 3 != 0:
             raise AssertionError("Number of values not a multiple of 3")
         return data
 
     def runBenchmark(self, benchmark, bmSuiteArgs):
+        directory = self.directory()
+        if directory is None:
+            directory, benchmark = benchmark.split('/')
+
         arguments = ['benchmark']
-        arguments.extend(['--simple', '--elapsed', '--iterations'])
-        arguments.extend(['--time', str(self.time())])
+        if self.config()['kind'] == 'simple':
+            arguments.extend(['--simple', '--elapsed', '--iterations'])
+            time = self.time()
+            if isinstance(time, dict):
+                if benchmark in time:
+                    time = str(time[benchmark])
+                else:
+                    time = str(time['default'])
+            else:
+                time = str(self.time())
+            arguments.extend(['--time', time])
+        elif self.config()['kind'] == 'fixed-iterations':
+            iterations_arg = ','.join([str(i) for i in sorted(self.config()['iterations'][benchmark].keys())])
+            arguments.extend(['--elapsed', '--iterations', '--ips'])
+            arguments.extend(['--fixed-iterations'])
+            arguments.extend([iterations_arg])
+        else:
+            raise AssertionError("Unknown benchmark kind: " + self.config()['kind'])
+
         if ':' in benchmark:
             benchmark_file, benchmark_name = benchmark.split(':')
             benchmark_names = [benchmark_name]
         else:
             benchmark_file = benchmark
             benchmark_names = []
-        arguments.extend(['bench/' + self.directory() + '/' + benchmark_file + '.rb'])
+        arguments.extend(['bench/' + directory + '/' + benchmark_file + '.rb'])
         arguments.extend(benchmark_names)
         arguments.extend(bmSuiteArgs)
         out = mx.OutputCapture()
@@ -287,7 +314,8 @@ class AllBenchmarksBenchmarkSuite(RubyBenchmarkSuite):
             lines = out.data.split('\n')[1:-1]
 
             data = self.filterLines(lines)
-            elapsed = [d for n, d in enumerate(data) if n % 3 == 0]
+            iterations = [d for n, d in enumerate(data) if n % 3 == 0]
+            elapsed = [d for n, d in enumerate(data) if n % 3 == 1]
             samples = [d for n, d in enumerate(data) if n % 3 == 2]
 
             if lines[-1] == 'optimised away':
@@ -308,9 +336,19 @@ class AllBenchmarksBenchmarkSuite(RubyBenchmarkSuite):
                     'metric.better': 'higher',
                     'metric.iteration': len(samples),
                     'extra.metric.warmedup': 'true',
-                    'extra.metric.elapsed-num': elapsed[-1] + 2.0, # just put the data point beyond the last one a bit
+                    'extra.metric.elapsed-num': elapsed[-1] + 2.0 if elapsed else 2.0, # just put the data point beyond the last one a bit
                     'error': 'optimised away'
                 }]
+            elif self.config()['kind'] == 'fixed-iterations':
+                iteration_config = self.config()['iterations'][benchmark]
+                return [{
+                    'benchmark': benchmark,
+                    'metric.name': iteration_config[iteration],
+                    'metric.iteration': iteration,
+                    'metric.value': e,
+                    'metric.unit': 's',
+                    'metric.better': 'lower'
+                } for n, (e, iteration) in enumerate(zip(elapsed, iterations)) if iteration in iteration_config]
             else:
                 return [{
                     'benchmark': benchmark,
@@ -469,15 +507,20 @@ asciidoctor_benchmarks = [
     'asciidoctor:string-lines',
     'asciidoctor:read-line',
     'asciidoctor:restore-line',
-    'asciidoctor:load-string',
-    'asciidoctor:load-file',
     'asciidoctor:quote-match',
     'asciidoctor:quote-sub',
     'asciidoctor:join-lines',
-    'asciidoctor:convert'
+    'asciidoctor-convert',
+    'asciidoctor-load-file',
+    'asciidoctor-load-string'
 ]
 
-asciidoctor_benchmark_time = 120
+asciidoctor_benchmark_time = {
+    'asciidoctor-convert': 400,
+    'asciidoctor-load-file': 400,
+    'asciidoctor-load-string': 400,
+    'default': 120
+}
 
 class AsciidoctorBenchmarkSuite(AllBenchmarksBenchmarkSuite):
     def name(self):
@@ -578,7 +621,7 @@ class ServerBenchmarkSuite(RubyBenchmarkSuite):
     def runBenchmark(self, benchmark, bmSuiteArgs):
         arguments = ['ruby']
         if not bmSuiteArgs:
-            arguments.extend(['--experimental-options', '--engine.CompilationFailureAction=ExitVM'])
+            arguments.extend(['--check-compilation'])
         arguments.extend(['bench/servers/' + benchmark + '.rb'])
 
         server = BackgroundJT(arguments + bmSuiteArgs)
@@ -616,6 +659,68 @@ class ServerBenchmarkSuite(RubyBenchmarkSuite):
                     'error': 'failed'
                 }]
 
+class RubykonBenchmarkSuite(AllBenchmarksBenchmarkSuite):
+    def name(self):
+        return 'rubykon'
+
+    def directory(self):
+        return 'rubykon'
+
+    def benchmarkList(self, bmSuiteArgs):
+        return ['rubykon']
+
+    def time(self):
+        return 120
+
+class LiquidBenchmarkSuite(AllBenchmarksBenchmarkSuite):
+    def name(self):
+        return 'liquid'
+
+    def directory(self):
+        return 'liquid'
+
+    def benchmarkList(self, bmSuiteArgs):
+        return ['liquid-cart-parse', 'liquid-cart-render', 'liquid-middleware']
+
+    def time(self):
+        return 60
+
+warmup_benchmarks = [
+    'asciidoctor/asciidoctor-convert',
+    'asciidoctor/asciidoctor-load-file',
+    'asciidoctor/asciidoctor-load-string',
+    'rubykon/rubykon',
+]
+
+blog6_benchmarks = [
+    'rails/blog6-bundle-install',
+    'rails/blog6-rails-routes',
+]
+
+class WarmupBenchmarkSuite(AllBenchmarksBenchmarkSuite):
+    def config(self):
+        iterations = {
+            'asciidoctor-convert':     {10:'startup', 100:'early-warmup', 500:'late-warmup'},
+            'asciidoctor-load-file':   {10:'startup', 100:'early-warmup', 500:'late-warmup'},
+            'asciidoctor-load-string': {10:'startup', 100:'early-warmup', 500:'late-warmup'},
+            'rubykon':                 {1:'startup', 10:'early-warmup', 30:'late-warmup'},
+            'blog6-bundle-install':    {1:'single-shot'},
+            'blog6-rails-routes':      {1:'single-shot'},
+        }
+        return {'kind': 'fixed-iterations', 'iterations': iterations}
+
+    def name(self):
+        return 'ruby-warmup'
+
+    def directory(self):
+        return None
+
+    def benchmarkList(self, bmSuiteArgs):
+        benchmarks = warmup_benchmarks[:]
+        if os.environ.get('GUEST_VM') != "jruby":
+            benchmarks.extend(blog6_benchmarks)
+        return benchmarks
+
 mx_benchmark.add_bm_suite(BuildStatsBenchmarkSuite())
 mx_benchmark.add_bm_suite(AllocationBenchmarkSuite())
 mx_benchmark.add_bm_suite(InstructionsBenchmarkSuite())
@@ -632,3 +737,6 @@ mx_benchmark.add_bm_suite(SyntheticBenchmarkSuite())
 mx_benchmark.add_bm_suite(MicroBenchmarkSuite())
 mx_benchmark.add_bm_suite(SavinaBenchmarkSuite())
 mx_benchmark.add_bm_suite(ServerBenchmarkSuite())
+mx_benchmark.add_bm_suite(RubykonBenchmarkSuite())
+mx_benchmark.add_bm_suite(LiquidBenchmarkSuite())
+mx_benchmark.add_bm_suite(WarmupBenchmarkSuite())

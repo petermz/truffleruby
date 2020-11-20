@@ -9,9 +9,9 @@
  */
 package org.truffleruby.core.cast;
 
-import org.truffleruby.Layouts;
 import org.truffleruby.RubyContext;
 import org.truffleruby.RubyLanguage;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.core.string.StringCachingGuards;
 import org.truffleruby.core.string.StringOperations;
 import org.truffleruby.core.symbol.RubySymbol;
@@ -20,7 +20,7 @@ import org.truffleruby.language.RubyGuards;
 import org.truffleruby.language.RubyNode;
 import org.truffleruby.language.RubySourceNode;
 import org.truffleruby.language.control.RaiseException;
-import org.truffleruby.language.dispatch.CallDispatchHeadNode;
+import org.truffleruby.language.dispatch.DispatchNode;
 import org.truffleruby.utils.Utils;
 
 import com.oracle.truffle.api.dsl.Cached;
@@ -30,7 +30,6 @@ import com.oracle.truffle.api.dsl.GenerateUncached;
 import com.oracle.truffle.api.dsl.ImportStatic;
 import com.oracle.truffle.api.dsl.NodeChild;
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.BranchProfile;
 
 /** Converts a method name to a Java String. The exception message below assumes this conversion is done for a method
@@ -48,10 +47,14 @@ public abstract class NameToJavaStringNode extends RubySourceNode {
         return NameToJavaStringNodeGen.create(name);
     }
 
-    public abstract String executeToJavaString(Object name);
+    public static NameToJavaStringNode getUncached() {
+        return NameToJavaStringNodeGen.getUncached();
+    }
 
-    @Specialization(guards = "isRubyString(value)")
-    protected String stringNameToJavaString(DynamicObject value,
+    public abstract String execute(Object name);
+
+    @Specialization
+    protected String stringNameToJavaString(RubyString value,
             @Cached @Shared("toJavaStringNode") ToJavaStringNode toJavaStringNode) {
         return toJavaStringNode.executeToJavaString(value);
     }
@@ -71,14 +74,14 @@ public abstract class NameToJavaStringNode extends RubySourceNode {
     protected String nameToJavaString(Object object,
             @CachedContext(RubyLanguage.class) RubyContext context,
             @Cached BranchProfile errorProfile,
-            @Cached CallDispatchHeadNode toStr) {
+            @Cached DispatchNode toStr) {
         final Object coerced;
 
         try {
             coerced = toStr.call(object, "to_str");
         } catch (RaiseException e) {
             errorProfile.enter();
-            if (Layouts.BASIC_OBJECT.getLogicalClass(e.getException()) == context.getCoreLibrary().noMethodErrorClass) {
+            if (e.getException().getLogicalClass() == context.getCoreLibrary().noMethodErrorClass) {
                 throw new RaiseException(context, context.getCoreExceptions().typeError(
                         Utils.concat(object, " is not a symbol nor a string"),
                         this));
@@ -88,7 +91,7 @@ public abstract class NameToJavaStringNode extends RubySourceNode {
         }
 
         if (RubyGuards.isRubyString(coerced)) {
-            return StringOperations.getString((DynamicObject) coerced);
+            return ((RubyString) coerced).getJavaString();
         } else {
             errorProfile.enter();
             throw new RaiseException(context, context.getCoreExceptions().typeErrorBadCoercion(

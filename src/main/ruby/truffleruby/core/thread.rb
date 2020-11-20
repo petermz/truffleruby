@@ -62,114 +62,6 @@
 
 class Thread
 
-  # Utilities
-
-  # Implementation note: ideally, the recursive_objects
-  # lookup table would be different per method call.
-  # Currently it doesn't cause problems, but if ever
-  # a method :foo calls a method :bar which could
-  # recurse back to :foo, it could require making
-  # the tables independent.
-  def self.recursion_guard(obj)
-    id = obj.object_id
-    objects = current.recursive_objects
-
-    objects[id] = true
-    begin
-      yield
-    ensure
-      objects.delete id
-    end
-  end
-
-  def self.guarding?(obj)
-    current.recursive_objects[obj.object_id]
-  end
-
-  # detect_recursion will return if there's a recursion
-  # on obj (or the pair obj+paired_obj).
-  # If there is one, it returns true.
-  # Otherwise, it will yield once and return false.
-  def self.detect_recursion(obj, paired_obj=nil)
-    unless Primitive.object_can_contain_object obj
-      yield
-      return false
-    end
-
-    id = obj.object_id
-    pair_id = paired_obj.object_id
-    objects = current.recursive_objects
-
-    case objects[id]
-
-    # Default case, we haven't seen +obj+ yet, so we add it and run the block.
-    when nil
-      objects[id] = pair_id
-      begin
-        yield
-      ensure
-        objects.delete id
-      end
-
-    # We've seen +obj+ before and it's got multiple paired objects associated
-    # with it, so check the pair and yield if there is no recursion.
-    when Hash
-      return true if objects[id][pair_id]
-
-      objects[id][pair_id] = true
-      begin
-        yield
-      ensure
-        objects[id].delete pair_id
-      end
-
-    # We've seen +obj+ with one paired object, so check the stored one for
-    # recursion.
-    #
-    # This promotes the value to a Hash since there is another new paired
-    # object.
-    else
-      previous = objects[id]
-      return true if previous == pair_id
-
-      objects[id] = { previous => true, pair_id => true }
-      begin
-        yield
-      ensure
-        objects[id] = previous
-      end
-    end
-
-    false
-  end
-  Truffle::Graal.always_split method(:detect_recursion)
-
-  class InnerRecursionDetected < Exception; end # rubocop:disable Lint/InheritException
-
-  # Similar to detect_recursion, but will short circuit all inner recursion levels
-  def self.detect_outermost_recursion(obj, paired_obj=nil, &block)
-    rec = current.recursive_objects
-
-    if rec[:__detect_outermost_recursion__]
-      if detect_recursion(obj, paired_obj, &block)
-        raise InnerRecursionDetected
-      end
-      false
-    else
-      rec[:__detect_outermost_recursion__] = true
-      begin
-        begin
-          detect_recursion(obj, paired_obj, &block)
-        rescue InnerRecursionDetected
-          return true
-        end
-        return nil
-      ensure
-        rec.delete :__detect_outermost_recursion__
-      end
-    end
-  end
-
   # Class methods
 
   def self.exit
@@ -227,9 +119,6 @@ class Thread
 
   # Instance methods
 
-  attr_reader :recursive_objects, :randomizer
-  attr_accessor :abort_on_exception, :report_on_exception
-
   def initialize(*args, &block)
     Kernel.raise ThreadError, 'must be called with a block' unless block
     if Primitive.thread_initialized?(self)
@@ -239,7 +128,7 @@ class Thread
   end
 
   def freeze
-    Truffle::System.synchronized(self) { @thread_local_variables.freeze }
+    Truffle::System.synchronized(self) { Primitive.thread_local_variables(self).freeze }
     super
   end
 
@@ -288,7 +177,7 @@ class Thread
     exc = Truffle::ExceptionOperations.build_exception_for_raise(exc, msg)
 
     exc.set_context ctx if ctx
-    exc.capture_backtrace!(1) unless exc.backtrace?
+    Primitive.exception_capture_backtrace(exc, 1) unless exc.backtrace?
 
     Truffle::ExceptionOperations.show_exception_for_debug(exc, 1) if $DEBUG
 
@@ -297,6 +186,22 @@ class Thread
     else
       Primitive.thread_raise self, exc
     end
+  end
+
+  def abort_on_exception
+    Primitive.thread_get_abort_on_exception(self)
+  end
+
+  def abort_on_exception=(val)
+    Primitive.thread_set_abort_on_exception(self, !!val)
+  end
+
+  def report_on_exception
+    Primitive.thread_get_report_on_exception(self)
+  end
+
+  def report_on_exception=(val)
+    Primitive.thread_set_report_on_exception(self, !!val)
   end
 
   def safe_level
@@ -370,21 +275,21 @@ class Thread
 
   def thread_variable_get(name)
     var = convert_to_local_name(name)
-    Truffle::System.synchronized(self) { @thread_local_variables[var] }
+    Truffle::System.synchronized(self) { Primitive.thread_local_variables(self)[var] }
   end
 
   def thread_variable_set(name, value)
     var = convert_to_local_name(name)
-    Truffle::System.synchronized(self) { @thread_local_variables[var] = value }
+    Truffle::System.synchronized(self) { Primitive.thread_local_variables(self)[var] = value }
   end
 
   def thread_variable?(name)
     var = convert_to_local_name(name)
-    Truffle::System.synchronized(self) { @thread_local_variables.key? var }
+    Truffle::System.synchronized(self) { Primitive.thread_local_variables(self).key? var }
   end
 
   def thread_variables
-    Truffle::System.synchronized(self) { @thread_local_variables.keys }
+    Truffle::System.synchronized(self) { Primitive.thread_local_variables(self).keys }
   end
 
   def backtrace(omit = 0, length = undefined)
@@ -461,13 +366,6 @@ class ConditionVariable
 
   def marshal_dump
     raise TypeError, "can't dump #{self.class}"
-  end
-end
-
-module Truffle::ThreadOperations
-  def self.report_exception(thread, exception)
-    message = "#{thread.inspect} terminated with exception:\n#{exception.full_message}"
-    $stderr.write message
   end
 end
 

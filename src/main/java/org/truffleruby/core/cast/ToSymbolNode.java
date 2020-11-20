@@ -9,16 +9,18 @@
  */
 package org.truffleruby.core.cast;
 
+import com.oracle.truffle.api.dsl.Cached;
 import org.truffleruby.RubyContext;
 import org.truffleruby.RubyLanguage;
-import org.truffleruby.core.string.StringOperations;
+import org.truffleruby.core.rope.Rope;
+import org.truffleruby.core.rope.RopeNodes;
+import org.truffleruby.core.string.RubyString;
 import org.truffleruby.core.symbol.RubySymbol;
-import org.truffleruby.language.RubyBaseNode;
 
 import com.oracle.truffle.api.dsl.CachedContext;
 import com.oracle.truffle.api.dsl.GenerateUncached;
 import com.oracle.truffle.api.dsl.Specialization;
-import com.oracle.truffle.api.object.DynamicObject;
+import org.truffleruby.language.RubyBaseNode;
 
 @GenerateUncached
 public abstract class ToSymbolNode extends RubyBaseNode {
@@ -27,25 +29,47 @@ public abstract class ToSymbolNode extends RubyBaseNode {
         return ToSymbolNodeGen.create();
     }
 
-    public abstract RubySymbol executeToSymbol(Object object);
+    public static ToSymbolNode getUncached() {
+        return ToSymbolNodeGen.getUncached();
+    }
 
-    // TODO(CS): cache the conversion to a symbol? Or should the user do that themselves?
+    public abstract RubySymbol execute(Object object);
 
     @Specialization
     protected RubySymbol toSymbolSymbol(RubySymbol symbol) {
         return symbol;
     }
 
-    @Specialization(guards = "isRubyString(string)")
-    protected RubySymbol toSymbolString(DynamicObject string,
-            @CachedContext(RubyLanguage.class) RubyContext context) {
-        return context.getSymbol((StringOperations.rope(string)));
+    @Specialization(guards = "str == cachedStr", limit = "getCacheLimit()")
+    protected RubySymbol toSymbolJavaString(String str,
+            @Cached(value = "str") String cachedStr,
+            @CachedContext(RubyLanguage.class) RubyContext context,
+            @Cached(value = "context.getSymbol(cachedStr)") RubySymbol rubySymbol) {
+        return rubySymbol;
     }
 
-    @Specialization
-    protected RubySymbol toSymbol(String string,
+    @Specialization(replaces = "toSymbolJavaString")
+    protected RubySymbol toSymbolJavaStringUncached(String str,
             @CachedContext(RubyLanguage.class) RubyContext context) {
-        return context.getSymbol(string);
+        return context.getSymbol(str);
     }
 
+    @Specialization(guards = "equals.execute(str.rope, cachedRope)", limit = "getCacheLimit()")
+    protected RubySymbol toSymbolRubyString(RubyString str,
+            @Cached(value = "str.rope") Rope cachedRope,
+            @CachedContext(RubyLanguage.class) RubyContext context,
+            @Cached RopeNodes.EqualNode equals,
+            @Cached(value = "context.getSymbol(cachedRope)") RubySymbol rubySymbol) {
+        return rubySymbol;
+    }
+
+    @Specialization(replaces = "toSymbolRubyString")
+    protected RubySymbol toSymbolRubyStringUncached(RubyString str,
+            @CachedContext(RubyLanguage.class) RubyContext context) {
+        return context.getSymbol(str.rope);
+    }
+
+    protected int getCacheLimit() {
+        return RubyLanguage.getCurrentContext().getOptions().DISPATCH_CACHE;
+    }
 }

@@ -9,16 +9,13 @@
  */
 package org.truffleruby.core.array;
 
-import org.truffleruby.Layouts;
 import org.truffleruby.core.array.ArrayBuilderNode.BuilderState;
 import org.truffleruby.language.RubyContextSourceNode;
-import org.truffleruby.language.RubyGuards;
 import org.truffleruby.language.RubyNode;
 
 import com.oracle.truffle.api.CompilerDirectives;
 import com.oracle.truffle.api.frame.VirtualFrame;
 import com.oracle.truffle.api.nodes.ExplodeLoop;
-import com.oracle.truffle.api.object.DynamicObject;
 import com.oracle.truffle.api.profiles.ConditionProfile;
 
 /** Concatenate argument arrays (translating a org.jruby.ast.ArgsCatParseNode). */
@@ -36,7 +33,7 @@ public final class ArrayConcatNode extends RubyContextSourceNode {
     }
 
     @Override
-    public DynamicObject execute(VirtualFrame frame) {
+    public RubyArray execute(VirtualFrame frame) {
         if (arrayBuilderNode == null) {
             CompilerDirectives.transferToInterpreterAndInvalidate();
             arrayBuilderNode = insert(ArrayBuilderNode.create());
@@ -48,14 +45,14 @@ public final class ArrayConcatNode extends RubyContextSourceNode {
         }
     }
 
-    private DynamicObject executeSingle(VirtualFrame frame) {
+    private RubyArray executeSingle(VirtualFrame frame) {
         BuilderState state = arrayBuilderNode.start();
         final Object childObject = children[0].execute(frame);
 
         final int size;
-        if (isArrayProfile.profile(RubyGuards.isRubyArray(childObject))) {
-            final DynamicObject childArray = (DynamicObject) childObject;
-            size = Layouts.ARRAY.getSize(childArray);
+        if (isArrayProfile.profile(childObject instanceof RubyArray)) {
+            final RubyArray childArray = (RubyArray) childObject;
+            size = childArray.size;
             arrayBuilderNode.appendArray(state, 0, childArray);
         } else {
             size = 1;
@@ -65,16 +62,16 @@ public final class ArrayConcatNode extends RubyContextSourceNode {
     }
 
     @ExplodeLoop
-    private DynamicObject executeMultiple(VirtualFrame frame) {
+    private RubyArray executeMultiple(VirtualFrame frame) {
         BuilderState state = arrayBuilderNode.start();
         int length = 0;
 
         for (int n = 0; n < children.length; n++) {
             final Object childObject = children[n].execute(frame);
 
-            if (isArrayProfile.profile(RubyGuards.isRubyArray(childObject))) {
-                final DynamicObject childArray = (DynamicObject) childObject;
-                final int size = Layouts.ARRAY.getSize(childArray);
+            if (isArrayProfile.profile(childObject instanceof RubyArray)) {
+                final RubyArray childArray = (RubyArray) childObject;
+                final int size = childArray.size;
                 arrayBuilderNode.appendArray(state, length, childArray);
                 length += size;
             } else {

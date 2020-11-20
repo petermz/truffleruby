@@ -32,7 +32,7 @@ module Truffle
     # Avoid using #raise here to prevent infinite recursion
     def self.exception_class_object_expected!
       exc = ::TypeError.new('exception class/object expected')
-      exc.capture_backtrace!(1)
+      Primitive.exception_capture_backtrace(exc, 1)
 
       show_exception_for_debug(exc, 2) if $DEBUG
 
@@ -48,8 +48,7 @@ module Truffle
     end
 
     # MRI: name_err_mesg_to_str
-    def self.receiver_string(exception)
-      receiver = exception.receiver
+    def self.receiver_string(receiver)
       ret = begin
         if Primitive.object_respond_to?(receiver, :inspect, false)
           Truffle::Type.rb_inspect(receiver)
@@ -104,9 +103,19 @@ module Truffle
         causes[err.cause] = true
         if reverse
           append_causes(str, err.cause, causes, reverse, highlight)
-          str << Truffle::ExceptionOperations.backtrace_message(highlight, reverse, err.cause.backtrace, err.cause)
+          backtrace_message = Truffle::ExceptionOperations.backtrace_message(highlight, reverse, err.cause.backtrace, err.cause)
+          if backtrace_message.empty?
+            str << Truffle::ExceptionOperations.message_and_class(err, highlight)
+          else
+            str << backtrace_message
+          end
         else
-          str << Truffle::ExceptionOperations.backtrace_message(highlight, reverse, err.cause.backtrace, err.cause)
+          backtrace_message = Truffle::ExceptionOperations.backtrace_message(highlight, reverse, err.cause.backtrace, err.cause)
+          if backtrace_message.empty?
+            str << Truffle::ExceptionOperations.message_and_class(err, highlight)
+          else
+            str << backtrace_message
+          end
           append_causes(str, err.cause, causes, reverse, highlight)
         end
       end
@@ -133,6 +142,10 @@ module Truffle
       end
     end
 
+    def self.get_formatted_backtrace(e)
+      e.full_message(order: :top)
+    end
+
     def self.comparison_error_message(x, y)
       y_classname = if Truffle::Type.is_special_const?(y)
                       y.inspect
@@ -143,19 +156,19 @@ module Truffle
     end
 
     NO_METHOD_ERROR = Proc.new do |exception|
-      format("undefined method `%s' for %s", exception.name, receiver_string(exception))
+      format("undefined method `%s' for %s", exception.name, receiver_string(exception.receiver))
     end
 
     NO_LOCAL_VARIABLE_OR_METHOD_ERROR = Proc.new do |exception|
-      format("undefined local variable or method `%s' for %s", exception.name, receiver_string(exception))
+      format("undefined local variable or method `%s' for %s", exception.name, receiver_string(exception.receiver))
     end
 
     PRIVATE_METHOD_ERROR = Proc.new do |exception|
-      format("private method `%s' called for %s", exception.name, receiver_string(exception))
+      format("private method `%s' called for %s", exception.name, receiver_string(exception.receiver))
     end
 
     PROTECTED_METHOD_ERROR = Proc.new do |exception|
-      format("protected method `%s' called for %s", exception.name, receiver_string(exception))
+      format("protected method `%s' called for %s", exception.name, receiver_string(exception.receiver))
     end
 
     SUPER_METHOD_ERROR = Proc.new do |exception|
