@@ -1,8 +1,9 @@
 #include <truffleruby-impl.h>
 #include <ruby/encoding.h>
-#include <printf.h>
 
 // *printf* functions
+#if !defined(__linux__) || defined(__GLIBC__)
+#include <printf.h>
 
 #ifdef __APPLE__
 static printf_domain_t printf_domain;
@@ -26,7 +27,7 @@ static int rb_tr_fprintf_value_arginfo(const struct printf_info *info,
   }
   return 1;
 }
-#endif
+#endif  // __APPLE__
 
 static int rb_tr_fprintf_value(FILE *stream,
                                const struct printf_info *info,
@@ -59,6 +60,21 @@ static int rb_tr_fprintf_value(FILE *stream,
   len = fprintf(stream, "%s", cstr);
   return len;
 }
+
+void rb_tr_init_printf(void) {
+  #ifdef __APPLE__
+  printf_domain = new_printf_domain();
+  register_printf_domain_function(printf_domain, 'P', rb_tr_fprintf_value, rb_tr_fprintf_value_arginfo, NULL);
+  #else
+  register_printf_specifier('P', rb_tr_fprintf_value, rb_tr_fprintf_value_arginfo);
+  #endif
+}
+
+#else
+void rb_tr_init_printf(void) {
+    // no op in musl
+}
+#endif  // !defined(__linux__) || defined(__GLIBC__)
 
 VALUE rb_enc_vsprintf(rb_encoding *enc, const char *format, va_list args) {
   char *buffer;
@@ -107,13 +123,4 @@ VALUE rb_f_sprintf(int argc, const VALUE *argv) {
 #undef vsnprintf
 int ruby_vsnprintf(char *str, size_t n, char const *fmt, va_list ap) {
   return vsnprintf(str, n, fmt, ap);
-}
-
-void rb_tr_init_printf(void) {
-  #ifdef __APPLE__
-  printf_domain = new_printf_domain();
-  register_printf_domain_function(printf_domain, 'P', rb_tr_fprintf_value, rb_tr_fprintf_value_arginfo, NULL);
-  #else
-  register_printf_specifier('P', rb_tr_fprintf_value, rb_tr_fprintf_value_arginfo);
-  #endif
 }
